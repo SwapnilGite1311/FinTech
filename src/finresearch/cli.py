@@ -10,6 +10,7 @@ from .paper import replay_paper, write_paper_results
 from .data_source import fetch_eod_csv, fetch_adjusted_eod_csv
 from .model import train_and_evaluate, write_model_outputs, predict_latest
 from .dashboard import build_dashboard
+from .dashboard_server import serve_dashboard
 from datetime import date
 import os
 
@@ -61,6 +62,16 @@ def main() -> int:
     dashboard.add_argument("--data-dir", type=Path, default=Path("data/market-data"), help="directory with adjusted price CSVs")
     dashboard.add_argument("--results-dir", type=Path, default=Path("model-basket"), help="train-model basket output directory")
     dashboard.add_argument("--output", type=Path, default=Path("dashboard-paper-replay.html"), help="standalone HTML dashboard path")
+    dashboard_server = subparsers.add_parser("dashboard-server", help="serve a local dashboard with a button to run all research models")
+    dashboard_server.add_argument("--data-dir", type=Path, default=Path("data/market-data"), help="directory with adjusted price CSVs")
+    dashboard_server.add_argument("--results-dir", type=Path, default=Path("model-basket"), help="where model and signal outputs are saved")
+    dashboard_server.add_argument("--output", type=Path, default=Path("dashboard-paper-replay.html"), help="dashboard HTML file served on localhost")
+    dashboard_server.add_argument("--port", type=int, default=8765, help="localhost port")
+    dashboard_server.add_argument("--horizon", type=int, default=5, help="forecast and maximum hold horizon in sessions")
+    dashboard_server.add_argument("--capital", type=float, default=10000.0, help="research capital for each independent simulation")
+    dashboard_server.add_argument("--cost-bps", type=float, default=30.0, help="estimated one-way cost in basis points")
+    dashboard_server.add_argument("--allocation-pct", type=float, default=50.0, help="maximum starting-capital allocation per simulated position")
+    dashboard_server.add_argument("--probability-threshold", type=float, default=0.55, help="fixed threshold for simulated buy signals")
     fetch = subparsers.add_parser("fetch-eod", help="download real NSE daily OHLCV data from TejHQ (no broker login)")
     fetch.add_argument("--symbol", required=True, help="NSE symbol, for example TCS")
     fetch.add_argument("--start", required=True, help="first date, YYYY-MM-DD")
@@ -175,6 +186,15 @@ def main() -> int:
             dashboard_path = build_dashboard(args.data_dir, args.results_dir, args.output)
             print(f"Offline historical replay dashboard created: {dashboard_path.resolve()}")
             print("No live data connection or broker orders. Open the HTML file in a browser.")
+            return 0
+        if args.command == "dashboard-server":
+            if not 1 <= args.port <= 65535:
+                raise ValueError("Port must be between 1 and 65535")
+            if args.capital <= 0:
+                raise ValueError("Research capital must be positive")
+            serve_dashboard(args.data_dir, args.results_dir, args.output, args.port,
+                            args.horizon, args.capital, args.cost_bps,
+                            args.allocation_pct, args.probability_threshold)
             return 0
         bars = load_bars(args.csv)
         if args.command == "predict-model":

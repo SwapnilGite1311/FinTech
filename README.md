@@ -63,13 +63,15 @@ python -m finresearch train-model --data-dir .\data\market-data --horizon 5 --ca
 
 The basket command keeps one file per symbol (choosing the file with the most rows if duplicate date ranges exist) and runs each symbol as a separate scenario using the requested capital, reporting results separately in `basket_summary.json`. The scenarios run independently, not simultaneously: each one may use up to ₹10,000, but they do not represent one combined ten-stock portfolio. This is historical replay, not broker paper trading. A 2021–2025 basket also has survivorship and sample-size limits; it cannot establish future profitability.
 
-To view the saved validation and test replays in a dark, offline dashboard, run:
+For a one-click research run across every adjusted symbol in the local data folder, start the local dashboard server:
 
 ```powershell
-python -m finresearch model-dashboard --data-dir .\data\market-data --results-dir .\model-basket --output .\dashboard-paper-replay.html
+python -m finresearch dashboard-server --data-dir .\data\market-data --results-dir .\model-basket --output .\dashboard-paper-replay.html
 ```
 
-Open `dashboard-paper-replay.html` in a browser. It shows adjusted-price candles with simulated buy/sell fill markers, a separate account equity chart, model metrics, and the simulated order log. The HTML embeds local report data and makes no network or broker requests. It visualizes historical replay only; it does not stream live prices or place orders.
+Keep that PowerShell window open and browse to `http://127.0.0.1:8765`. Click **Run model · all stocks** to retrain/evaluate each model on its local adjusted CSV, score the latest available row, save the research-only signals, and refresh the charts. The button runs across all symbols, not just the currently selected chart. This uses local data only; download updated prices first if the local files are stale. It does not connect to a broker, refresh market data, or place paper/live orders. The ₹10,000 default is a separate simulation per stock, not one combined portfolio.
+
+To export a static dashboard file without the run button enabled, use `model-dashboard`. It shows adjusted-price candles with simulated buy/sell fill markers, a separate account equity chart, model metrics, and the simulated order log.
 
 The CSV input must contain date, open, high, low, close, and volume columns, with one row per trading session and prices in the same currency. The loader accepts the project's lowercase headers and NSE-style headers such as `Date`, `Open Price`, `High Price`, `Low Price`, `Close Price`, and `Total Traded Quantity`. Example invocation:
 

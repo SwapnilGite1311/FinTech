@@ -45,6 +45,10 @@
     {
       "choice": "Dark, compact research dashboard with separate stock-candle and simulated-equity charts; historical-only with no live-order path.",
       "date": "2026-10-23"
+    },
+    {
+      "choice": "The dashboard run control starts one local research cycle across all available symbols and shows per-symbol latest signals; no broker orders.",
+      "date": "2026-10-23"
     }
   ],
   "evidence": [],
