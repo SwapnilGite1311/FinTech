@@ -4,12 +4,34 @@ An educational research tool for testing trading ideas before risking money. The
 
 ## Start
 
-Requires Python 3.11+. The app has no runtime dependencies. Install the local package once:
+Requires Python 3.11+. Install the local package and its scikit-learn model dependency once:
 
 ```powershell
 python -m pip install -e .
 python -m finresearch --help
 ```
+
+## Train the first prediction model
+
+The first model is an interpretable logistic-regression baseline. It estimates whether the next five-session return, entering at the next open, will exceed the estimated round-trip costs. Inputs are daily returns, moving-average distances, volatility, RSI, and relative volume. It is not pretrained.
+
+Train and evaluate it using a chronological 60/20/20 split:
+
+```powershell
+python -m finresearch train-model --csv .\data\market-data\NSE_TCS_2021-01-01_2025-12-31_adjusted.csv --symbol TCS --horizon 5 --capital 10000 --cost-bps 30 --allocation-pct 50 --output model-results
+```
+
+Labels whose five-session outcome crosses a split boundary are excluded. Scaling is fit only on training data, and rolling-origin checks use a five-session gap. The fixed buy probability threshold is 0.55 and the sell threshold is 0.45; they are not tuned on the final test period. The output contains a research-only model artifact, chronological classification and portfolio metrics, and validation/test predictions. The report's test result comes from the model fitted only on the training period; the separate saved `model.json` is refit on all labeled history after evaluation for exploratory scoring.
+
+Score the latest row in a CSV with the saved research model:
+
+```powershell
+python -m finresearch predict-model --csv .\data\market-data\NSE_TCS_2021-01-01_2025-12-31_adjusted.csv --model .\model-results\model.json --output .\model-signal.json
+```
+
+This prints `BUY_IF_FLAT`, `SELL_IF_HOLDING`, or `HOLD`; it only saves a research prediction and sends no order. The file above ends in 2025, so its latest-row prediction is historical and stale. Download a fresh adjusted CSV before interpreting any latest-row score. `--capital` is simulated research capital; default ₹10,000. The project does not connect to a broker or place orders.
+
+The current TCS file is only a first prototype dataset. Its untouched 2025 test was close to chance and did not establish a reliable edge. One stock across 2021–2025 is not enough to justify live trading. The next research step is to run the same locked model process separately across several adjusted stocks and market regimes, with verified data-use rights and more realistic charges. Live capital remains capped at ₹500 if a broker feature is ever considered; no such feature exists now.
 
 ## Get real historical data without a broker account
 
@@ -31,6 +53,15 @@ python -m finresearch fetch-adjusted --symbol TCS --start 2021-01-01 --end 2025-
 ```
 
 The key is read from the environment and is not written to disk. The command joins the adjusted close to raw OHLCV by date and scales open/high/low by the same provider factor; volume remains raw. It saves source metadata next to the CSV, under the ignored local `data\market-data` folder. Check the provider and applicable exchange terms before using the feed for simulation or commercial purposes.
+
+To build a small research basket, set the key in the same PowerShell window, fetch adjusted history for each symbol, then fit independent per-symbol models. The example symbols are a data-pipeline example, not stock recommendations:
+
+```powershell
+python -m finresearch fetch-adjusted-many --symbols TCS,INFY,RELIANCE,SBIN,ITC,HDFCBANK,ICICIBANK,LT,AXISBANK,HINDUNILVR --start 2021-01-01 --end 2025-12-31
+python -m finresearch train-model --data-dir .\data\market-data --horizon 5 --capital 10000 --cost-bps 30 --allocation-pct 50 --output .\model-basket
+```
+
+The basket command keeps one file per symbol (choosing the file with the most rows if duplicate date ranges exist), divides the research capital equally across symbols, and reports each symbol separately in `basket_summary.json`. These are independent historical simulations, not a combined portfolio or live paper trading. A 2021–2025 basket also has survivorship and sample-size limits; it cannot establish future profitability.
 
 The CSV input must contain date, open, high, low, close, and volume columns, with one row per trading session and prices in the same currency. The loader accepts the project's lowercase headers and NSE-style headers such as `Date`, `Open Price`, `High Price`, `Low Price`, `Close Price`, and `Total Traded Quantity`. Example invocation:
 

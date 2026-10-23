@@ -3,6 +3,11 @@
 /paper-results/
 /paper-results-*/
 /results/
+/model-results/
+/model-signal.json
+/model-results-full/
+/model-*/
+/dashboard*.html
 __pycache__/
 *.py[cod]
 *.egg-info/
