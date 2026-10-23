@@ -6,8 +6,9 @@ import sys
 
 from .backtest import load_bars, run_backtest, run_walk_forward, write_results, write_walk_forward_result
 from .paper import replay_paper, write_paper_results
-from .data_source import fetch_eod_csv
+from .data_source import fetch_eod_csv, fetch_adjusted_eod_csv
 from datetime import date
+import os
 
 
 def main() -> int:
@@ -43,6 +44,11 @@ def main() -> int:
     fetch.add_argument("--start", required=True, help="first date, YYYY-MM-DD")
     fetch.add_argument("--end", required=True, help="last date, YYYY-MM-DD")
     fetch.add_argument("--output", type=Path, default=Path("data/market-data"), help="where to save CSV and source metadata")
+    fetch_adjusted = subparsers.add_parser("fetch-adjusted", help="download split/dividend-adjusted NSE daily OHLCV")
+    fetch_adjusted.add_argument("--symbol", required=True, help="NSE symbol, for example TCS")
+    fetch_adjusted.add_argument("--start", required=True, help="first date, YYYY-MM-DD")
+    fetch_adjusted.add_argument("--end", required=True, help="last date, YYYY-MM-DD")
+    fetch_adjusted.add_argument("--output", type=Path, default=Path("data/market-data"), help="where to save CSV and source metadata")
     args = parser.parse_args()
     try:
         if args.command == "fetch-eod":
@@ -50,6 +56,13 @@ def main() -> int:
                                         date.fromisoformat(args.end), args.output)
             print(f"Downloaded end-of-day data: {output_path.resolve()}")
             print("This is raw historical data; it is not adjusted for corporate actions.")
+            return 0
+        if args.command == "fetch-adjusted":
+            output_path = fetch_adjusted_eod_csv(
+                args.symbol, date.fromisoformat(args.start), date.fromisoformat(args.end),
+                args.output, os.environ.get("FINRESEARCH_TEJHQ_API_KEY", ""))
+            print(f"Downloaded adjusted end-of-day data: {output_path.resolve()}")
+            print("Prices are adjusted; volume is raw. Source metadata was saved beside the CSV.")
             return 0
         bars = load_bars(args.csv)
         if args.command == "backtest":

@@ -13,15 +13,24 @@ python -m finresearch --help
 
 ## Get real historical data without a broker account
 
-The project can download NSE daily OHLCV from TejHQ's keyless endpoint. This provides a concrete research dataset without broker credentials or a trading deposit:
+The project can download NSE daily OHLCV from TejHQ without broker credentials or a trading deposit:
 
 ```powershell
 python -m finresearch fetch-eod --symbol TCS --start 2021-01-01 --end 2026-10-20
 ```
 
-The command saves a CSV and a `.source.json` provenance file under `data\market-data`. The downloaded values are **raw, not adjusted for splits or dividends**. A split can look like a huge loss in raw prices, so don't use this file to judge strategy returns. TejHQ publishes an adjusted-price endpoint with a free key; the current downloader intentionally fetches only the keyless raw endpoint. Keep downloaded data local. The checked-in sample is synthetic only.
+The command saves a CSV and a `.source.json` provenance file under `data\market-data`. The downloaded values are **raw, not adjusted for splits or dividends**. A split can look like a huge loss in raw prices, so don't use this file to judge strategy returns. Use `fetch-adjusted` below for an adjusted series. Keep downloaded data local. The checked-in sample is synthetic only.
 
-TejHQ currently documents daily OHLCV coverage from 2010 for NSE. Its free adjusted-price endpoint requires a free API key, which can be considered later if we need adjustment-aware backtests. See [TejHQ dataset documentation](https://huggingface.co/datasets/tejhq/indian-markets) and [API documentation](https://tejhq.dev/docs).
+TejHQ documents daily OHLCV coverage from 2010 for NSE. See [TejHQ dataset documentation](https://huggingface.co/datasets/tejhq/indian-markets) and [API documentation](https://tejhq.dev/docs).
+
+For split- and dividend-adjusted data, create a free key at [tejhq.dev/keys](https://tejhq.dev/keys), then set it for the current PowerShell window and download the adjusted file:
+
+```powershell
+$env:FINRESEARCH_TEJHQ_API_KEY = "paste-your-key-here"
+python -m finresearch fetch-adjusted --symbol TCS --start 2021-01-01 --end 2025-12-31
+```
+
+The key is read from the environment and is not written to disk. The command joins the adjusted close to raw OHLCV by date and scales open/high/low by the same provider factor; volume remains raw. It saves source metadata next to the CSV, under the ignored local `data\market-data` folder. Check the provider and applicable exchange terms before using the feed for simulation or commercial purposes.
 
 The CSV input must contain date, open, high, low, close, and volume columns, with one row per trading session and prices in the same currency. The loader accepts the project's lowercase headers and NSE-style headers such as `Date`, `Open Price`, `High Price`, `Low Price`, `Close Price`, and `Total Traded Quantity`. Example invocation:
 
@@ -29,10 +38,10 @@ The CSV input must contain date, open, high, low, close, and volume columns, wit
 python -m finresearch backtest --csv path\to\prices.csv --fast 5 --slow 20 --capital 10000 --cost-bps 15 --output results
 ```
 
-To select moving-average periods using the oldest 60% of the data, inspect the following 20%, then report the final 20% as untouched test data:
+To select moving-average periods using the oldest 60% of the adjusted data, inspect the following 20%, then report the final 20% as untouched test data:
 
 ```powershell
-python -m finresearch walk-forward --csv path\to\adjusted_prices.csv --capital 10000 --cost-bps 30
+python -m finresearch walk-forward --csv .\data\market-data\NSE_TCS_2021-01-01_2025-12-31_adjusted.csv --capital 10000 --cost-bps 30
 ```
 
 This is a chronological baseline, not machine learning and not evidence of future profit. The selected periods are chosen by training return, so trying many candidates can overfit. The untouched test segment and buy-and-hold comparison make that visible. The cost input is only a rough per-side estimate, not a complete Indian brokerage, tax, or exchange-fee calculation.
@@ -63,7 +72,7 @@ The moving-average crossover strategy calculates its signal from each session's 
 
 ## Roadmap
 
-1. Obtain and use corporate-action-adjusted data under terms that permit research simulation.
+1. Confirm the provider's and exchange's terms cover our intended research and simulation use.
 2. Compare simple strategies across multiple stocks and market periods, with realistic costs and untouched test periods.
 3. Add a market-data adapter for simulated paper orders after the provider's terms explicitly allow that use.
 4. Review current broker and exchange requirements before considering any live order integration.
