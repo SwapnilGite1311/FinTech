@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "project": {
+    "name": "Fintech",
+    "productType": "Educational trading research and historical paper replay",
+    "stack": ["Python 3.11", "Self-contained HTML, CSS, and JavaScript"]
+  },
+  "sources": {
+    "tokens": [],
+    "components": [],
+    "assets": [],
+    "instructions": []
+  },
+  "design": {
+    "colorMode": "light",
+    "colors": {"canvas": "#f4f7fb", "ink": "#172b4d", "muted": "#62738a", "positive": "#0b8f82", "negative": "#df665f", "primary": "#3867d6"},
+    "typography": {"family": "system sans-serif", "style": "compact data-focused hierarchy"},
+    "spacing": {"density": "comfortable dashboard panels"},
+    "radius": {"panel": "12px", "controls": "8px"},
+    "shadows": {"panels": "subtle"},
+    "motion": {"preference": "minimal"},
+    "density": "comfortable"
+  },
+  "components": {
+    "installed": [],
+    "preferredPrimitives": [],
+    "patterns": []
+  },
+  "constraints": {
+    "must": [],
+    "avoid": []
+  },
+  "decisions": [{"decision": "Use a light, accessible research dashboard with blue price lines, teal simulated buys, coral simulated sells, and explicit synthetic-versus-market-data labels.", "reason": "Make historical simulation understandable to a beginner without implying that orders are live or results predict future performance."}],
+  "evidence": [],
+  "generatedAt": "2026-10-23T02:58:02.051Z"
+}

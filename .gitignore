@@ -3,6 +3,7 @@
 /paper-results/
 /paper-results-*/
 /results/
+/dashboard*.html
 __pycache__/
 *.py[cod]
 *.egg-info/
