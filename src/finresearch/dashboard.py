@@ -110,7 +110,7 @@ def build_dashboard(data_dir: Path, results_dir: Path, output: Path, include_liv
     data_json = _safe_json({"symbols": payload, "latest_signals": latest_signals})
     html = _HTML.replace("__DASHBOARD_DATA__", data_json)
     if include_live:
-        html = html.replace("</main>", _LIVE_PANEL_HTML + "</main>")
+        html = html.replace('<section class="headline">', _LIVE_PANEL_HTML + '<section class="headline">')
         html = html.replace("</body>", _LIVE_PANEL_SCRIPT + "</body>")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(html, encoding="utf-8")
@@ -164,7 +164,7 @@ const tooltip=document.getElementById('tooltip'),priceCanvas=document.getElement
 </script></body></html>'''
 
 
-_LIVE_PANEL_HTML = r'''<section class="panel" style="margin-top:14px"><div class="panelhead"><div><div class="paneltitle">Live market monitor · read only</div><div class="paneldesc" id="liveInstrument">Waiting for market data configuration</div></div><div class="status" id="liveConnection"><i></i> NOT CONNECTED</div></div><div style="display:flex;gap:20px;align-items:center;padding:12px 16px;color:#8492a4;font-size:11px"><strong id="livePrice" style="font-size:24px;color:#edf3fa">—</strong><span id="liveTime">No live ticks received</span><span id="liveCount"></span></div><canvas id="liveChartCanvas" style="height:340px" aria-label="Read-only live market price graph"></canvas><div id="liveModelStatus" style="margin:0 16px 14px;padding:10px 12px;border:1px solid #403621;border-radius:8px;background:#17150f;color:#c7b888;font-size:11px">The saved model uses daily bars. It is not scoring these live ticks; applying it intraday would be misleading. This panel sends no orders and uses no paper cash.</div></section>'''
+_LIVE_PANEL_HTML = r'''<section class="panel" style="margin-top:14px"><div class="panelhead"><div><div class="paneltitle">Live market monitor · read only</div><div class="paneldesc" id="liveInstrument">Waiting for market data configuration</div></div><div class="status" id="liveConnection"><i></i> NOT CONNECTED</div></div><div style="display:flex;gap:20px;align-items:center;padding:12px 16px;color:#8492a4;font-size:11px"><strong id="livePrice" style="font-size:24px;color:#edf3fa">—</strong><span id="liveTime">No live ticks received</span><span id="liveCount"></span></div><canvas id="liveChartCanvas" style="height:340px" aria-label="Read-only live market price graph"></canvas><div style="padding:12px 16px;border-top:1px solid #202a36"><div style="font-size:13px;font-weight:650;margin-bottom:10px">Paper account · live mark-to-market</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:9px"><div><div style="color:#8492a4;font-size:10px">Net paper P&amp;L</div><strong id="paperPnl" style="font-size:21px">₹0</strong><div id="paperReturn" style="color:#8492a4;font-size:10px">0.00%</div></div><div><div style="color:#8492a4;font-size:10px">Starting capital</div><strong id="paperCapital">₹10,000</strong></div><div><div style="color:#8492a4;font-size:10px">Current equity</div><strong id="paperEquity">₹10,000</strong></div><div><div style="color:#8492a4;font-size:10px">Position</div><strong id="paperPosition">Flat</strong></div><div><div style="color:#8492a4;font-size:10px">Paper signal</div><strong id="paperSignal">Waiting for feed</strong></div></div></div><div id="liveModelStatus" style="margin:0 16px 14px;padding:10px 12px;border:1px solid #403621;border-radius:8px;background:#17150f;color:#c7b888;font-size:11px">Paper baseline: 5/20 SMA crossover on one-minute bars, 30 bps estimated cost per side, and a 5% paper-account loss stop. ₹10,000 virtual capital per instrument; symbols are independent scenarios. This is not the daily ML model or an optimized profit strategy. No broker orders are sent.</div><div class="tablewrap"><table><thead><tr><th>Time</th><th>Paper fill</th><th>Shares</th><th>Price</th><th>Reason</th></tr></thead><tbody id="paperOrders"></tbody></table><div class="empty" id="paperEmpty">No paper fills yet. The baseline needs 20 complete one-minute bars and a crossover.</div></div></section>'''
 
 
 _LIVE_PANEL_SCRIPT = r'''<script>
@@ -172,18 +172,20 @@ async function refreshLivePanel(){
   const canvas=document.getElementById('liveChartCanvas');
   try{
     const response=await fetch('/api/live',{cache:'no-store'}),data=await response.json();
-    const key=data.instrument_keys?.[0]||'',ticks=data.ticks?.[key]||[],last=ticks.at(-1);
+    const key=data.instrument_keys?.[0]||'',ticks=data.ticks?.[key]||[],last=ticks.at(-1),paper=data.paper?.[key];
     setText('liveInstrument',key?`${data.provider} · ${key}`:'Upstox · no instrument configured');
     setText('liveConnection',data.connected?'LIVE FEED CONNECTED':'NOT CONNECTED');
     document.getElementById('liveConnection').style.color=data.connected?'var(--green)':'var(--amber)';
     setText('livePrice',last?`₹${fmt(last.price)}`:'—');
     setText('liveTime',last?`Received ${new Date(last.received_at).toLocaleTimeString()}${last.exchange_time?` · exchange ${last.exchange_time}`:''}`:(data.error||'No live ticks received'));
     setText('liveCount',ticks.length?`${ticks.length} recent ticks · read only`:'');
+    if(paper){const sign=paper.net_pnl>=0?'+':'−';setText('paperPnl',`${sign}${money(Math.abs(paper.net_pnl))}`);document.getElementById('paperPnl').style.color=paper.net_pnl>=0?'var(--green)':'var(--red)';setText('paperReturn',`${paper.net_return_pct>=0?'+':''}${Number(paper.net_return_pct).toFixed(2)}% · after estimated costs`);setText('paperCapital',money(paper.starting_capital));setText('paperEquity',money(paper.equity));setText('paperPosition',paper.shares?`${paper.shares} share(s) · mark ₹${fmt(paper.mark_price)}`:'Flat');setText('paperSignal',last?paper.signal:'Waiting for live feed');const rows=document.getElementById('paperOrders');rows.replaceChildren();const orders=[...paper.orders].reverse();document.getElementById('paperEmpty').hidden=orders.length>0;orders.slice(0,10).forEach(order=>{const tr=document.createElement('tr');[new Date(order.received_at).toLocaleTimeString(),order.side,String(order.shares),money(order.price),order.reason].forEach((value,i)=>{const td=document.createElement('td');td.textContent=value;if(i===1)td.className='side '+(order.side==='BUY'?'buy':'sell');tr.append(td)});rows.append(tr)});if(paper.halted)setText('paperSignal','HALTED · loss guardrail reached')}
     const {ctx,w,h}=setupCanvas(canvas);ctx.clearRect(0,0,w,h);
     if(!ticks.length){ctx.fillStyle=palette.muted;ctx.fillText(data.error||'Waiting for authenticated live feed…',20,30);return}
     const prices=ticks.map(t=>Number(t.price)),lo=Math.min(...prices),hi=Math.max(...prices),pad=(hi-lo)*.12||Math.max(.1,hi*.001),a=axes(ctx,w,h,lo-pad,hi+pad,v=>fmt(v));
     ctx.beginPath();ticks.forEach((tick,i)=>{const x=a.x(i),y=a.y(Number(tick.price));i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
     ctx.strokeStyle=prices.at(-1)>=prices[0]?palette.green:palette.red;ctx.lineWidth=2;ctx.stroke();
+    for(const order of (paper?.orders||[])){const index=ticks.findIndex(t=>t.received_at===order.received_at);if(index<0)continue;const x=a.x(index),y=a.y(Number(order.price));ctx.beginPath();ctx.arc(x,y,5,0,Math.PI*2);ctx.fillStyle=order.side==='BUY'?palette.blue:palette.red;ctx.fill()}
     ctx.fillStyle=palette.muted;ctx.textAlign='left';ctx.fillText(new Date(ticks[0].received_at).toLocaleTimeString(),a.L,h-7);ctx.textAlign='right';ctx.fillText(new Date(ticks.at(-1).received_at).toLocaleTimeString(),w-a.R,h-7);
   }catch(_error){const {ctx}=setupCanvas(canvas);ctx.clearRect(0,0,canvas.width,canvas.height);setText('liveTime','Dashboard live-data endpoint is unavailable')}
 }

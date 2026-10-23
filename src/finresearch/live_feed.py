@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 import threading
 import time
 import csv
@@ -33,6 +34,104 @@ def _find_ltp(value: Any) -> tuple[float | None, str | None, int | None]:
     return None, None, None
 
 
+class PaperSmaBaseline:
+    """Transparent one-minute crossover paper benchmark; never sends broker orders."""
+
+    def __init__(self, capital: float = 10000.0, cost_bps_per_side: float = 30.0,
+                 max_drawdown_pct: float = 5.0):
+        self.starting_capital = capital
+        self.cash = capital
+        self.cost_rate = cost_bps_per_side / 10000
+        self.max_loss = capital * max_drawdown_pct / 100
+        self.shares = 0
+        self.current_price: float | None = None
+        self.current_minute: str | None = None
+        self.current_bar: dict[str, float] | None = None
+        self.closes: list[float] = []
+        self.previous_fast: float | None = None
+        self.previous_slow: float | None = None
+        self.pending_action: str | None = None
+        self.orders: list[dict[str, Any]] = []
+        self.halted = False
+        self.last_signal = "Collecting one-minute bars"
+        self._timezone = ZoneInfo("Asia/Kolkata")
+
+    def _execute(self, action: str, price: float, received_at: str, reason: str) -> None:
+        if action == "BUY" and self.shares == 0 and not self.halted:
+            quantity = int(self.cash * 0.5 / (price * (1 + self.cost_rate)))
+            if quantity < 1:
+                return
+            self.cash -= quantity * price * (1 + self.cost_rate)
+            self.shares = quantity
+        elif action == "SELL" and self.shares:
+            quantity = self.shares
+            self.cash += quantity * price * (1 - self.cost_rate)
+            self.shares = 0
+        else:
+            return
+        self.orders.append({"side": action, "price": price, "shares": quantity,
+                            "received_at": received_at, "reason": reason})
+        del self.orders[:-30]
+
+    def on_tick(self, price: float, received_at: str) -> None:
+        self.current_price = price
+        instant = datetime.fromisoformat(received_at).astimezone(self._timezone)
+        minute = instant.strftime("%Y-%m-%d %H:%M")
+        if minute != self.current_minute:
+            if self.current_bar is not None:
+                self._finish_bar()
+            self.current_minute = minute
+            self.current_bar = {"open": price, "high": price, "low": price, "close": price}
+            if self.pending_action:
+                action, self.pending_action = self.pending_action, None
+                self._execute(action, price, received_at, "5/20 SMA signal; next-minute-open paper fill")
+        elif self.current_bar is not None:
+            self.current_bar["high"] = max(self.current_bar["high"], price)
+            self.current_bar["low"] = min(self.current_bar["low"], price)
+            self.current_bar["close"] = price
+
+        equity = self.cash + self.shares * price * (1 - self.cost_rate)
+        if not self.halted and self.starting_capital - equity >= self.max_loss:
+            if self.shares:
+                self._execute("SELL", price, received_at, "5% paper-account loss circuit breaker")
+            self.halted = True
+            self.pending_action = None
+            self.last_signal = "HALTED · paper loss guardrail reached"
+
+    def _finish_bar(self) -> None:
+        assert self.current_bar is not None
+        self.closes.append(self.current_bar["close"])
+        self.closes = self.closes[-20:]
+        if self.halted or len(self.closes) < 20:
+            return
+        fast = sum(self.closes[-5:]) / 5
+        slow = sum(self.closes) / 20
+        if self.previous_fast is not None and self.previous_slow is not None:
+            crossed_up = self.previous_fast <= self.previous_slow and fast > slow
+            crossed_down = self.previous_fast >= self.previous_slow and fast < slow
+            if crossed_up and not self.shares:
+                self.pending_action = "BUY"
+                self.last_signal = "BUY queued · next one-minute bar"
+            elif crossed_down and self.shares:
+                self.pending_action = "SELL"
+                self.last_signal = "SELL queued · next one-minute bar"
+            else:
+                self.last_signal = "HOLD"
+        self.previous_fast, self.previous_slow = fast, slow
+
+    def snapshot(self) -> dict[str, Any]:
+        mark = self.current_price or 0.0
+        # Mark open positions at estimated net liquidation value, including exit-side costs.
+        equity = self.cash + self.shares * mark * (1 - self.cost_rate)
+        pnl = equity - self.starting_capital
+        return {"starting_capital": round(self.starting_capital, 2), "cash": round(self.cash, 2),
+                "shares": self.shares, "mark_price": mark, "equity": round(equity, 2),
+                "net_pnl": round(pnl, 2), "net_return_pct": round(pnl / self.starting_capital * 100, 3),
+                "orders": list(self.orders), "signal": self.last_signal, "halted": self.halted,
+                "strategy": "5/20 simple moving-average crossover on one-minute bars",
+                "estimated_cost_bps_per_side": round(self.cost_rate * 10000, 2)}
+
+
 class UpstoxLiveFeed:
     """Keep recent live ticks in memory; never exposes or logs the API token."""
 
@@ -41,6 +140,7 @@ class UpstoxLiveFeed:
         self.instrument_keys = instrument_keys
         self._lock = threading.Lock()
         self._ticks: dict[str, list[dict[str, Any]]] = {key: [] for key in instrument_keys}
+        self._paper = {key: PaperSmaBaseline() for key in instrument_keys}
         self._connected = False
         self._last_message: str | None = None
         self._error: str | None = None
@@ -103,6 +203,7 @@ class UpstoxLiveFeed:
                         for key, tick in updates:
                             self._ticks[key].append(tick)
                             del self._ticks[key][:-1200]
+                            self._paper[key].on_tick(tick["price"], tick["received_at"])
                         self._last_message = now
                         self._connected = True
                     try:
@@ -146,4 +247,5 @@ class UpstoxLiveFeed:
             return {"provider": "Upstox", "connected": self._connected,
                     "instrument_keys": self.instrument_keys, "last_message": self._last_message,
                     "error": self._error,
-                    "ticks": {key: list(values) for key, values in self._ticks.items()}}
+                    "ticks": {key: list(values) for key, values in self._ticks.items()},
+                    "paper": {key: value.snapshot() for key, value in self._paper.items()}}

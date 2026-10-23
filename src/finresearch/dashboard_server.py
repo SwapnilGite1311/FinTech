@@ -173,8 +173,13 @@ def serve_dashboard(data_dir: Path, results_dir: Path, dashboard_path: Path,
         server.live_callback = live_feed.snapshot
         live_message = f"Read-only Upstox feed starting for {len(instrument_keys)} instrument(s)."
     elif not token:
+        from .live_feed import PaperSmaBaseline
+        initial_paper = {key: PaperSmaBaseline().snapshot() for key in instrument_keys}
+        for account in initial_paper.values():
+            account["signal"] = "Waiting for live feed"
         server.live_callback = lambda: {"provider": "Upstox", "connected": False,
             "instrument_keys": instrument_keys, "ticks": {key: [] for key in instrument_keys},
+            "paper": initial_paper,
             "error": "Not configured. Set FINRESEARCH_UPSTOX_ANALYTICS_TOKEN and restart."}
         live_message = "Live chart is waiting for a read-only Upstox Analytics Token (default instrument: TCS)."
     else:
