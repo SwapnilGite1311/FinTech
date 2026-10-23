@@ -1,5 +1,6 @@
 # Downloaded third-party market data; retain source metadata locally, not in Git.
 /data/market-data/
+/data/live-capture/
 /paper-results/
 /paper-results-*/
 /results/
@@ -8,6 +9,8 @@
 /model-results-full/
 /model-*/
 /dashboard*.html
+/dashboard-server.log
+/dashboard-server.err
 __pycache__/
 *.py[cod]
 *.egg-info/

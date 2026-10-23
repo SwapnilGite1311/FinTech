@@ -7,7 +7,7 @@ name = "fintech-trading-research"
 version = "0.1.0"
 description = "Educational backtesting and paper-trading research tools"
 requires-python = ">=3.11"
-dependencies = ["scikit-learn>=1.5,<2"]
+dependencies = ["scikit-learn>=1.5,<2", "upstox-python-sdk>=2.23,<3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

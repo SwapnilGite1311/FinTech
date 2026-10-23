@@ -52,7 +52,7 @@ def _read_bars(path: Path) -> list[dict]:
     return result
 
 
-def build_dashboard(data_dir: Path, results_dir: Path, output: Path) -> Path:
+def build_dashboard(data_dir: Path, results_dir: Path, output: Path, include_live: bool = False) -> Path:
     """Combine local adjusted prices and saved model replay artifacts into one HTML file."""
     if not data_dir.is_dir():
         raise ValueError(f"Data directory does not exist: {data_dir}")
@@ -109,6 +109,9 @@ def build_dashboard(data_dir: Path, results_dir: Path, output: Path) -> Path:
     latest_signals = json.loads(signals_path.read_text(encoding="utf-8")) if signals_path.exists() else []
     data_json = _safe_json({"symbols": payload, "latest_signals": latest_signals})
     html = _HTML.replace("__DASHBOARD_DATA__", data_json)
+    if include_live:
+        html = html.replace("</main>", _LIVE_PANEL_HTML + "</main>")
+        html = html.replace("</body>", _LIVE_PANEL_SCRIPT + "</body>")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(html, encoding="utf-8")
     return output
@@ -159,3 +162,30 @@ const playButton=document.getElementById('playReplay');function stopReplay(reset
 document.querySelectorAll('[data-split]').forEach(b=>b.addEventListener('click',()=>{if(playbackTimer)stopReplay(true);split=b.dataset.split;document.querySelectorAll('[data-split]').forEach(x=>x.classList.toggle('active',x===b));render()}));select.addEventListener('change',()=>{if(playbackTimer)stopReplay(true);render()});window.addEventListener('resize',render);
 const tooltip=document.getElementById('tooltip'),priceCanvas=document.getElementById('priceChart');priceCanvas.addEventListener('pointermove',e=>{const c=priceCanvas._chart;if(!c)return;const r=priceCanvas.getBoundingClientRect(),x=e.clientX-r.left,a=c.axes,i=Math.max(0,Math.min(c.bars.length-1,Math.floor((x-a.L)/a.plotW*c.bars.length))),b=c.bars[i];if(!b)return;tooltip.innerHTML=`<b>${b.date}</b><br>Open ${fmt(b.open)} · High ${fmt(b.high)}<br>Low ${fmt(b.low)} · Close ${fmt(b.close)}`;tooltip.style.display='block';tooltip.style.left=Math.min(e.clientX+12,innerWidth-190)+'px';tooltip.style.top=Math.min(e.clientY+12,innerHeight-70)+'px'});priceCanvas.addEventListener('pointerleave',()=>tooltip.style.display='none');render();
 </script></body></html>'''
+
+
+_LIVE_PANEL_HTML = r'''<section class="panel" style="margin-top:14px"><div class="panelhead"><div><div class="paneltitle">Live market monitor · read only</div><div class="paneldesc" id="liveInstrument">Waiting for market data configuration</div></div><div class="status" id="liveConnection"><i></i> NOT CONNECTED</div></div><div style="display:flex;gap:20px;align-items:center;padding:12px 16px;color:#8492a4;font-size:11px"><strong id="livePrice" style="font-size:24px;color:#edf3fa">—</strong><span id="liveTime">No live ticks received</span><span id="liveCount"></span></div><canvas id="liveChartCanvas" style="height:340px" aria-label="Read-only live market price graph"></canvas><div id="liveModelStatus" style="margin:0 16px 14px;padding:10px 12px;border:1px solid #403621;border-radius:8px;background:#17150f;color:#c7b888;font-size:11px">The saved model uses daily bars. It is not scoring these live ticks; applying it intraday would be misleading. This panel sends no orders and uses no paper cash.</div></section>'''
+
+
+_LIVE_PANEL_SCRIPT = r'''<script>
+async function refreshLivePanel(){
+  const canvas=document.getElementById('liveChartCanvas');
+  try{
+    const response=await fetch('/api/live',{cache:'no-store'}),data=await response.json();
+    const key=data.instrument_keys?.[0]||'',ticks=data.ticks?.[key]||[],last=ticks.at(-1);
+    setText('liveInstrument',key?`${data.provider} · ${key}`:'Upstox · no instrument configured');
+    setText('liveConnection',data.connected?'LIVE FEED CONNECTED':'NOT CONNECTED');
+    document.getElementById('liveConnection').style.color=data.connected?'var(--green)':'var(--amber)';
+    setText('livePrice',last?`₹${fmt(last.price)}`:'—');
+    setText('liveTime',last?`Received ${new Date(last.received_at).toLocaleTimeString()}${last.exchange_time?` · exchange ${last.exchange_time}`:''}`:(data.error||'No live ticks received'));
+    setText('liveCount',ticks.length?`${ticks.length} recent ticks · read only`:'');
+    const {ctx,w,h}=setupCanvas(canvas);ctx.clearRect(0,0,w,h);
+    if(!ticks.length){ctx.fillStyle=palette.muted;ctx.fillText(data.error||'Waiting for authenticated live feed…',20,30);return}
+    const prices=ticks.map(t=>Number(t.price)),lo=Math.min(...prices),hi=Math.max(...prices),pad=(hi-lo)*.12||Math.max(.1,hi*.001),a=axes(ctx,w,h,lo-pad,hi+pad,v=>fmt(v));
+    ctx.beginPath();ticks.forEach((tick,i)=>{const x=a.x(i),y=a.y(Number(tick.price));i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
+    ctx.strokeStyle=prices.at(-1)>=prices[0]?palette.green:palette.red;ctx.lineWidth=2;ctx.stroke();
+    ctx.fillStyle=palette.muted;ctx.textAlign='left';ctx.fillText(new Date(ticks[0].received_at).toLocaleTimeString(),a.L,h-7);ctx.textAlign='right';ctx.fillText(new Date(ticks.at(-1).received_at).toLocaleTimeString(),w-a.R,h-7);
+  }catch(_error){const {ctx}=setupCanvas(canvas);ctx.clearRect(0,0,canvas.width,canvas.height);setText('liveTime','Dashboard live-data endpoint is unavailable')}
+}
+refreshLivePanel();setInterval(refreshLivePanel,1000);
+</script>'''

@@ -71,6 +71,20 @@ python -m finresearch dashboard-server --data-dir .\data\market-data --results-d
 
 Keep that PowerShell window open and browse to `http://127.0.0.1:8765`. Click **Run model · all stocks** to retrain/evaluate each model on its local adjusted CSV, score the latest available row, save the research-only signals, and refresh the charts. The button runs across all symbols, not just the currently selected chart. Use **Play historical replay** under the price graph to animate the saved test candles and reveal simulated buy/sell fills one session at a time. The **Paper portfolio · profit / loss** panel reports net account P&L after estimated costs for the selected stock and updates during replay. Each stock has a separate scenario capital amount; these are not a combined portfolio. This uses local data only; download updated prices first if the local files are stale. It does not connect to a broker, refresh market data, or place paper/live orders.
 
+### Optional live price monitor (read-only)
+
+The dashboard has a separate live price graph backed by Upstox's V3 market-data WebSocket. It does not place orders. The current daily model is deliberately **not applied** to the live ticks: it was trained on daily bars and needs a separate intraday dataset, model, and evaluation before its intraday scores are meaningful. To enable the chart, create an Upstox Analytics Token from the developer apps page and set it in the current PowerShell window (never paste it into source code or chat):
+
+```powershell
+$env:FINRESEARCH_UPSTOX_ANALYTICS_TOKEN = "paste-read-only-token-here"
+# Optional: default instrument is NSE_EQ|INE467B01029 (TCS)
+$env:FINRESEARCH_UPSTOX_INSTRUMENT_KEYS = "NSE_EQ|INE467B01029"
+python -m pip install -e .
+python -m finresearch dashboard-server --data-dir .\data\market-data --results-dir .\model-basket --output .\dashboard-paper-replay.html
+```
+
+The monitor needs a valid read-only token and network access; it only displays real feed data when the market is publishing ticks. It appends received ticks to the ignored local folder `data\live-capture` for later research. The token is kept in memory and is not written to logs or project files. Upstox documents Analytics Tokens as read-only, valid for one year, and usable with WebSocket feeds. Check current account and API terms directly with Upstox before setup. This feed is only a visualization/data-collection step, not a profitable strategy test or broker paper-trading account.
+
 To export a static dashboard file without the run button enabled, use `model-dashboard`. It shows adjusted-price candles with simulated buy/sell fill markers, a separate account equity chart, model metrics, and the simulated order log.
 
 The CSV input must contain date, open, high, low, close, and volume columns, with one row per trading session and prices in the same currency. The loader accepts the project's lowercase headers and NSE-style headers such as `Date`, `Open Price`, `High Price`, `Low Price`, `Close Price`, and `Total Traded Quantity`. Example invocation:
