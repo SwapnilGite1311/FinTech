@@ -61,7 +61,7 @@ python -m finresearch fetch-adjusted-many --symbols TCS,INFY,RELIANCE,SBIN,ITC,H
 python -m finresearch train-model --data-dir .\data\market-data --horizon 5 --capital 10000 --cost-bps 30 --allocation-pct 50 --output .\model-basket
 ```
 
-The basket command keeps one file per symbol (choosing the file with the most rows if duplicate date ranges exist), divides the research capital equally across symbols, and reports each symbol separately in `basket_summary.json`. These are independent historical simulations, not a combined portfolio or live paper trading. A 2021–2025 basket also has survivorship and sample-size limits; it cannot establish future profitability.
+The basket command keeps one file per symbol (choosing the file with the most rows if duplicate date ranges exist) and runs each symbol as a separate scenario using the requested capital, reporting results separately in `basket_summary.json`. The scenarios run independently, not simultaneously: each one may use up to ₹10,000, but they do not represent one combined ten-stock portfolio. This is historical replay, not broker paper trading. A 2021–2025 basket also has survivorship and sample-size limits; it cannot establish future profitability.
 
 The CSV input must contain date, open, high, low, close, and volume columns, with one row per trading session and prices in the same currency. The loader accepts the project's lowercase headers and NSE-style headers such as `Date`, `Open Price`, `High Price`, `Low Price`, `Close Price`, and `Total Traded Quantity`. Example invocation:
 

@@ -126,7 +126,9 @@ def main() -> int:
                         best_by_symbol[symbol_key] = (row_count, csv_path)
                 csv_files = [entry[1] for _, entry in sorted(best_by_symbol.items())]
             results = []
-            per_symbol_capital = args.capital / len(csv_files)
+            # Each symbol is an independent scenario run sequentially with the
+            # requested capital. This is not a combined, simultaneous basket.
+            per_symbol_capital = args.capital
             for csv_path in csv_files:
                 metadata_path = csv_path.with_suffix(".source.json")
                 if args.symbol:
@@ -154,11 +156,10 @@ def main() -> int:
                       f"model {results[-1]['test_model_return_pct']:.2f}% vs "
                       f"buy-and-hold {results[-1]['test_buy_and_hold_return_pct']:.2f}%")
             basket_summary = {
-                "method": "independent per-symbol models with chronological holdouts",
-                "total_research_capital": args.capital,
-                "capital_per_symbol": round(per_symbol_capital, 2),
+                "method": "independent per-symbol models with chronological holdouts; scenarios run separately, not concurrently",
+                "capital_per_simulation": round(per_symbol_capital, 2),
                 "symbols": results,
-                "note": "Model instances and paper-return outcomes are separate per symbol; this report is not live portfolio execution.",
+                "note": "Each symbol is simulated independently using the requested capital. These outcomes cannot be combined as a simultaneous portfolio, and no broker orders were sent.",
             }
             if len(csv_files) > 1:
                 args.output.mkdir(parents=True, exist_ok=True)
