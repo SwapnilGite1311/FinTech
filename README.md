@@ -69,7 +69,7 @@ For a one-click research run across every adjusted symbol in the local data fold
 python -m finresearch dashboard-server --data-dir .\data\market-data --results-dir .\model-basket --output .\dashboard-paper-replay.html
 ```
 
-Keep that PowerShell window open and browse to `http://127.0.0.1:8765`. Click **Run model · all stocks** to retrain/evaluate each model on its local adjusted CSV, score the latest available row, save the research-only signals, and refresh the charts. The button runs across all symbols, not just the currently selected chart. This uses local data only; download updated prices first if the local files are stale. It does not connect to a broker, refresh market data, or place paper/live orders. The ₹10,000 default is a separate simulation per stock, not one combined portfolio.
+Keep that PowerShell window open and browse to `http://127.0.0.1:8765`. Click **Run model · all stocks** to retrain/evaluate each model on its local adjusted CSV, score the latest available row, save the research-only signals, and refresh the charts. The button runs across all symbols, not just the currently selected chart. Use **Play historical replay** under the price graph to animate the saved test candles and reveal simulated buy/sell fills one session at a time. This uses local data only; download updated prices first if the local files are stale. It does not connect to a broker, refresh market data, or place paper/live orders. The ₹10,000 default is a separate simulation per stock, not one combined portfolio.
 
 To export a static dashboard file without the run button enabled, use `model-dashboard`. It shows adjusted-price candles with simulated buy/sell fill markers, a separate account equity chart, model metrics, and the simulated order log.
 
