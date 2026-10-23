@@ -9,6 +9,7 @@ from .backtest import load_bars, run_backtest, run_walk_forward, write_results, 
 from .paper import replay_paper, write_paper_results
 from .data_source import fetch_eod_csv, fetch_adjusted_eod_csv
 from .model import train_and_evaluate, write_model_outputs, predict_latest
+from .dashboard import build_dashboard
 from datetime import date
 import os
 
@@ -56,6 +57,10 @@ def main() -> int:
     predict_model.add_argument("--model", required=True, type=Path, help="model.json created by train-model")
     predict_model.add_argument("--symbol", help="symbol label; inferred from the CSV source metadata when available")
     predict_model.add_argument("--output", type=Path, default=Path("model-signal.json"), help="where to save the research-only prediction")
+    dashboard = subparsers.add_parser("model-dashboard", help="build an offline dashboard from saved model replay results")
+    dashboard.add_argument("--data-dir", type=Path, default=Path("data/market-data"), help="directory with adjusted price CSVs")
+    dashboard.add_argument("--results-dir", type=Path, default=Path("model-basket"), help="train-model basket output directory")
+    dashboard.add_argument("--output", type=Path, default=Path("dashboard-paper-replay.html"), help="standalone HTML dashboard path")
     fetch = subparsers.add_parser("fetch-eod", help="download real NSE daily OHLCV data from TejHQ (no broker login)")
     fetch.add_argument("--symbol", required=True, help="NSE symbol, for example TCS")
     fetch.add_argument("--start", required=True, help="first date, YYYY-MM-DD")
@@ -165,6 +170,11 @@ def main() -> int:
                 args.output.mkdir(parents=True, exist_ok=True)
                 (args.output / "basket_summary.json").write_text(json.dumps(basket_summary, indent=2) + "\n", encoding="utf-8")
             print(f"Research artifacts: {args.output.resolve()}")
+            return 0
+        if args.command == "model-dashboard":
+            dashboard_path = build_dashboard(args.data_dir, args.results_dir, args.output)
+            print(f"Offline historical replay dashboard created: {dashboard_path.resolve()}")
+            print("No live data connection or broker orders. Open the HTML file in a browser.")
             return 0
         bars = load_bars(args.csv)
         if args.command == "predict-model":

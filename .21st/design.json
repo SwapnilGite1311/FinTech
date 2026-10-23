@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "project": {
+    "name": "Fintech",
+    "productType": "Offline stock research dashboard",
+    "stack": [
+      "Python CLI",
+      "standalone HTML",
+      "Canvas charts"
+    ]
+  },
+  "sources": {
+    "tokens": [],
+    "components": [],
+    "assets": [],
+    "instructions": []
+  },
+  "design": {
+    "colorMode": "dark",
+    "colors": {
+      "positive": "#36d399",
+      "panel": "#10151d",
+      "text": "#edf3fa",
+      "background": "#080b10",
+      "accent": "#76a9ff",
+      "negative": "#ff6878"
+    },
+    "typography": {},
+    "spacing": {},
+    "radius": {},
+    "shadows": {},
+    "motion": {},
+    "density": "compact"
+  },
+  "components": {
+    "installed": [],
+    "preferredPrimitives": [],
+    "patterns": []
+  },
+  "constraints": {
+    "must": [],
+    "avoid": []
+  },
+  "decisions": [
+    {
+      "choice": "Dark, compact research dashboard with separate stock-candle and simulated-equity charts; historical-only with no live-order path.",
+      "date": "2026-10-23"
+    }
+  ],
+  "evidence": [],
+  "generatedAt": "2026-10-23T03:36:17.041Z"
+}
