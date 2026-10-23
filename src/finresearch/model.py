@@ -108,12 +108,14 @@ def _fit_model(samples: list[Sample]):
 def _simulate(
     bars: list[Bar], samples: list[Sample], probabilities: list[float], start_index: int,
     end_index: int, capital: float, cost_bps: float, allocation_pct: float,
-    probability_threshold: float, horizon: int,
+    probability_threshold: float, horizon: int, stop_loss_pct: float | None = None,
 ) -> dict:
     if not 0 < allocation_pct <= 100:
         raise ValueError("Allocation must be greater than 0 and at most 100 percent")
-    if not 0 < probability_threshold < 1:
-        raise ValueError("Probability threshold must be between 0 and 1")
+    if not 0 < probability_threshold <= 1:
+        raise ValueError("Probability threshold must be greater than 0 and at most 1")
+    if stop_loss_pct is not None and not 0 < stop_loss_pct < 100:
+        raise ValueError("Stop loss must be greater than 0 and less than 100 percent")
     probability_by_index = {sample.index: probability for sample, probability in zip(samples, probabilities)}
     fee_rate = cost_bps / 10_000
     sell_threshold = 1 - probability_threshold
@@ -146,6 +148,7 @@ def _simulate(
 
     for index in range(start_index, end_index):
         bar = bars[index]
+        stopped_today = False
         if pending_action:
             action, signal_probability, reason = pending_action
             if action == "BUY" and shares == 0:
@@ -165,6 +168,17 @@ def _simulate(
                 close_position(bar, bar.open, signal_probability, reason)
             pending_action = None
 
+        # Daily-bar stop simulation is conservative for overnight gaps: a gap
+        # through the stop fills at the open; otherwise it fills at the stop.
+        if shares and stop_loss_pct is not None:
+            stop_price = entry_price * (1 - stop_loss_pct / 100)
+            if bar.open <= stop_price or bar.low <= stop_price:
+                fill_price = min(bar.open, stop_price)
+                close_position(bar, fill_price, probability_by_index.get(index),
+                               f"{stop_loss_pct:.2f}% protective stop; daily OHLC fill estimate")
+                pending_action = None
+                stopped_today = True
+
         if shares:
             held_sessions += 1
         equity = cash + shares * bar.close * (1 - fee_rate)
@@ -177,7 +191,8 @@ def _simulate(
         elif shares and held_sessions >= horizon:
             pending_action = ("SELL", probability if probability is not None else 0.0,
                               f"maximum {horizon}-session holding period; exit next-session open")
-        elif not shares and probability is not None and probability >= probability_threshold and index + 1 < end_index:
+        elif (not shares and not stopped_today and probability is not None
+              and probability >= probability_threshold and index + 1 < end_index):
             pending_action = ("BUY", probability, "model probability cleared buy threshold; enter next-session open")
 
     # Force liquidation at the final close for comparable segment-end equity.
@@ -196,20 +211,99 @@ def _simulate(
     benchmark_cash = capital - benchmark_shares * bars[start_index].close * (1 + fee_rate)
     benchmark_end = benchmark_cash + benchmark_shares * bars[end_index - 1].close * (1 - fee_rate)
     ending_equity = curve[-1]["equity"] if curve else capital
+    trade_pnls = [float(trade["pnl"]) for trade in trades]
+    gross_profit = sum(pnl for pnl in trade_pnls if pnl > 0)
+    gross_loss = -sum(pnl for pnl in trade_pnls if pnl < 0)
+    winning_trades = sum(pnl > 0 for pnl in trade_pnls)
+    largest_loss = min((pnl for pnl in trade_pnls if pnl < 0), default=0.0)
     return {
         "starting_capital": round(capital, 2), "ending_equity": round(ending_equity, 2),
+        "net_pnl": round(ending_equity - capital, 2),
         "net_return_pct": round((ending_equity / capital - 1) * 100, 4),
         "buy_and_hold_return_pct": round((benchmark_end / capital - 1) * 100, 4),
         "buy_and_hold_shares": benchmark_shares,
         "max_drawdown_pct": round(max_drawdown * 100, 4),
-        "closed_trades": len(trades), "orders": orders, "trades": trades,
+        "closed_trades": len(trades),
+        "winning_trades": winning_trades,
+        "win_rate_pct": round(winning_trades / len(trades) * 100, 2) if trades else 0.0,
+        "profit_factor": round(gross_profit / gross_loss, 4) if gross_loss else None,
+        "largest_trade_loss": round(largest_loss, 2),
+        "orders": orders, "trades": trades,
         "equity_curve": curve,
     }
+
+
+def _select_validation_policy(
+    bars: list[Bar], validation: list[Sample], validation_prob: list[float],
+    start_index: int, end_index: int, capital: float, cost_bps: float,
+    allocation_pct: float, base_threshold: float, horizon: int,
+    max_drawdown_pct: float,
+    cv_folds: list[tuple[list[Sample], list[float], int, int]],
+) -> tuple[dict, list[dict]]:
+    """Select a small risk-policy grid using training folds and validation.
+
+    A policy must have positive net return, at least three closed trades, and
+    drawdown no greater than the configured research guardrail in every
+    rolling-origin fold and the validation segment. If none qualifies, the
+    model stands aside (cash) instead of forcing trades.
+    """
+    thresholds = sorted({round(max(0.50, base_threshold - 0.05), 4),
+                         round(base_threshold, 4),
+                         round(min(0.70, base_threshold + 0.05), 4),
+                         round(min(0.70, base_threshold + 0.10), 4)})
+    candidates = []
+    for threshold in thresholds:
+        for stop_loss in (None, 3.0, 5.0):
+            validation_simulation = _simulate(
+                bars, validation, validation_prob, start_index, end_index,
+                capital, cost_bps, allocation_pct, threshold, horizon, stop_loss)
+            fold_simulations = [
+                _simulate(bars, fold_samples, fold_prob, fold_start, fold_end,
+                          capital, cost_bps, allocation_pct, threshold, horizon, stop_loss)
+                for fold_samples, fold_prob, fold_start, fold_end in cv_folds]
+            candidates.append({
+                "probability_threshold": threshold,
+                "stop_loss_pct": stop_loss,
+                "validation_net_pnl": validation_simulation["net_pnl"],
+                "validation_return_pct": validation_simulation["net_return_pct"],
+                "validation_max_drawdown_pct": validation_simulation["max_drawdown_pct"],
+                "validation_closed_trades": validation_simulation["closed_trades"],
+                "validation_win_rate_pct": validation_simulation["win_rate_pct"],
+                "validation_profit_factor": validation_simulation["profit_factor"],
+                "validation_largest_trade_loss": validation_simulation["largest_trade_loss"],
+                "cv_fold_returns_pct": [item["net_return_pct"] for item in fold_simulations],
+                "cv_fold_drawdowns_pct": [item["max_drawdown_pct"] for item in fold_simulations],
+                "cv_fold_trade_counts": [item["closed_trades"] for item in fold_simulations],
+            })
+
+    eligible = [candidate for candidate in candidates
+                if candidate["cv_fold_returns_pct"]
+                and candidate["validation_closed_trades"] >= 3
+                and candidate["validation_return_pct"] > 0
+                and candidate["validation_max_drawdown_pct"] <= max_drawdown_pct
+                and all(value > 0 for value in candidate["cv_fold_returns_pct"])
+                and all(value <= max_drawdown_pct for value in candidate["cv_fold_drawdowns_pct"])]
+    if eligible:
+        selected = max(eligible, key=lambda item: (
+            sum(item["cv_fold_returns_pct"]) / len(item["cv_fold_returns_pct"]),
+            item["validation_return_pct"], -max(item["cv_fold_drawdowns_pct"]),
+            -item["validation_max_drawdown_pct"]))
+        policy = {"mode": "selected_rolling_validation_policy",
+                  "probability_threshold": selected["probability_threshold"],
+                  "stop_loss_pct": selected["stop_loss_pct"],
+                  "selection_reason": "highest mean rolling-fold return among candidates positive in every training fold and validation, with at least 3 validation trades and drawdown within the configured limit in every segment"}
+    else:
+        policy = {"mode": "stand_aside",
+                  "probability_threshold": 1.0,
+                  "stop_loss_pct": None,
+                  "selection_reason": "no candidate was positive in every rolling training fold and validation while meeting the drawdown and trade-count requirements"}
+    return policy, candidates
 
 
 def train_and_evaluate(
     bars: list[Bar], symbol: str, horizon: int, capital: float,
     cost_bps: float, allocation_pct: float, probability_threshold: float = 0.55,
+    max_drawdown_pct: float = 5.0,
 ) -> tuple[dict, dict, list[dict]]:
     if horizon < 1:
         raise ValueError("Prediction horizon must be at least one session")
@@ -217,6 +311,10 @@ def train_and_evaluate(
         raise ValueError("Model research needs at least 300 daily bars; use a longer adjusted history")
     if capital <= 0 or not math.isfinite(capital):
         raise ValueError("Capital must be a positive finite number")
+    if not 0 < max_drawdown_pct < 100 or not math.isfinite(max_drawdown_pct):
+        raise ValueError("Maximum validation drawdown must be greater than 0 and less than 100 percent")
+    if not 0 < probability_threshold < 1 or not math.isfinite(probability_threshold):
+        raise ValueError("Starting probability threshold must be greater than 0 and less than 1")
     samples = _make_samples(bars, horizon, cost_bps)
     train_cut, validation_cut = int(len(bars) * 0.6), int(len(bars) * 0.8)
     train = [sample for sample in samples if sample.exit_index < train_cut]
@@ -232,6 +330,7 @@ def train_and_evaluate(
     test_prob = train_model.predict_proba([sample.features for sample in test])[:, 1].tolist()
 
     cv_reports = []
+    policy_cv_folds: list[tuple[list[Sample], list[float], int, int]] = []
     splitter = TimeSeriesSplit(n_splits=3, gap=horizon)
     for fold, (fit_idx, check_idx) in enumerate(splitter.split(train), start=1):
         fit_samples = [train[int(i)] for i in fit_idx]
@@ -240,15 +339,31 @@ def train_and_evaluate(
             continue
         fold_model = _fit_model(fit_samples)
         fold_prob = fold_model.predict_proba([sample.features for sample in check_samples])[:, 1].tolist()
+        policy_cv_folds.append((check_samples, fold_prob, check_samples[0].index,
+                                check_samples[-1].exit_index + 1))
         fold_metrics = _classification_metrics([sample.label for sample in check_samples], fold_prob)
         cv_reports.append({"fold": fold, **fold_metrics,
                            "fit_end": bars[fit_samples[-1].index].date.isoformat(),
                            "check_start": bars[check_samples[0].index].date.isoformat()})
 
-    validation_sim = _simulate(bars, validation, validation_prob, train_cut, validation_cut,
-                               capital, cost_bps, allocation_pct, probability_threshold, horizon)
-    test_sim = _simulate(bars, test, test_prob, validation_cut, len(bars),
-                         capital, cost_bps, allocation_pct, probability_threshold, horizon)
+    validation_baseline = _simulate(
+        bars, validation, validation_prob, train_cut, validation_cut,
+        capital, cost_bps, allocation_pct, probability_threshold, horizon)
+    policy, policy_candidates = _select_validation_policy(
+        bars, validation, validation_prob, train_cut, validation_cut, capital,
+        cost_bps, allocation_pct, probability_threshold, horizon, max_drawdown_pct,
+        policy_cv_folds)
+    selected_threshold = float(policy["probability_threshold"])
+    selected_stop_loss = policy["stop_loss_pct"]
+    validation_sim = _simulate(
+        bars, validation, validation_prob, train_cut, validation_cut,
+        capital, cost_bps, allocation_pct, selected_threshold, horizon, selected_stop_loss)
+    test_sim = _simulate(
+        bars, test, test_prob, validation_cut, len(bars),
+        capital, cost_bps, allocation_pct, selected_threshold, horizon, selected_stop_loss)
+    test_baseline = _simulate(
+        bars, test, test_prob, validation_cut, len(bars),
+        capital, cost_bps, allocation_pct, probability_threshold, horizon)
     fixed_sma = run_backtest(bars[validation_cut:], 5, 20, capital, cost_bps, bars[:validation_cut])
     report = {
         "model": "standardized_logistic_regression",
@@ -259,20 +374,33 @@ def train_and_evaluate(
         "horizon_sessions": horizon,
         "estimated_cost_bps_per_side": cost_bps,
         "allocation_pct": allocation_pct,
-        "probability_threshold": probability_threshold,
-        "sell_threshold": round(1 - probability_threshold, 4),
-        "order_policy": "BUY at next open when flat and probability >= threshold; SELL at next open when holding and probability < 1-threshold; otherwise hold, with a maximum holding period equal to the forecast horizon.",
+        "probability_threshold": selected_threshold,
+        "sell_threshold": round(1 - selected_threshold, 4),
+        "max_validation_drawdown_pct": max_drawdown_pct,
+        "policy_selection": {"selected": policy, "candidates": policy_candidates,
+                             "selection_period": "training rolling-origin folds and validation only",
+                             "test_usage": "evaluation only; never used to select the policy"},
+        "order_policy": ("Stand aside; no candidate passed rolling-fold and validation risk/return requirements."
+                         if policy["mode"] == "stand_aside" else
+                         f"BUY at next open when flat and probability >= {selected_threshold:.2f}; "
+                         f"SELL at next open when holding and probability < {1-selected_threshold:.2f}; "
+                         f"protective stop {selected_stop_loss}% when configured; maximum holding period {horizon} sessions."),
         "split_method": "chronological 60/20/20; outcomes crossing split boundaries are purged by label exit date",
         "training": {"start": bars[train[0].index].date.isoformat(), "end": bars[train[-1].index].date.isoformat(),
                      "samples": len(train), "positive_pct": round(sum(s.label for s in train) / len(train) * 100, 2)},
         "validation": {"start": bars[validation[0].index].date.isoformat(), "end": bars[validation[-1].index].date.isoformat(),
                        "classification": _classification_metrics([s.label for s in validation], validation_prob),
+                       "baseline_portfolio": {key: value for key, value in validation_baseline.items()
+                                              if key not in {"orders", "trades", "equity_curve"}},
                        "portfolio": {key: value for key, value in validation_sim.items()
                                      if key not in {"orders", "trades", "equity_curve"}}},
         "test": {"start": bars[test[0].index].date.isoformat(), "end": bars[test[-1].index].date.isoformat(),
                  "classification": _classification_metrics([s.label for s in test], test_prob),
+                 "baseline_portfolio": {key: value for key, value in test_baseline.items()
+                                        if key not in {"orders", "trades", "equity_curve"}},
                  "portfolio": {key: value for key, value in test_sim.items()
                                if key not in {"orders", "trades", "equity_curve"}},
+                 "holdout_status": "previously inspected historical audit period; not a pristine final holdout",
                  "fixed_sma_5_20_return_pct": fixed_sma["net_return_pct"],
                  "buy_and_hold_return_pct": test_sim["buy_and_hold_return_pct"]},
         "train_time_series_cv": cv_reports,
@@ -280,7 +408,8 @@ def train_and_evaluate(
             "One symbol and a few years of daily history are not enough to establish a durable trading edge.",
             "This is a small interpretable baseline, not a pretrained model and not a live trading signal.",
             "Costs are a rough estimate; taxes, exchange fees, spread, slippage, and liquidity impact are incomplete.",
-            "The final test is one historical period; results can change materially on other stocks and regimes.",
+            "The 2025 historical test period has been inspected and is not a pristine final holdout.",
+            "The validation-selected policy can overfit the single validation period; any protective stop can gap through its threshold.",
         ],
     }
 
@@ -296,7 +425,8 @@ def train_and_evaluate(
             "scaler_mean": scaler.mean_.tolist(), "scaler_scale": scaler.scale_.tolist(),
             "coefficients": classifier.coef_[0].tolist(),
             "intercept": float(classifier.intercept_[0]), "positive_class": 1,
-            "horizon_sessions": horizon, "probability_threshold": probability_threshold,
+            "horizon_sessions": horizon, "probability_threshold": selected_threshold,
+            "stop_loss_pct": selected_stop_loss, "policy_mode": policy["mode"],
             "estimated_cost_bps_per_side": cost_bps, "warning": note,
         }
 
@@ -311,7 +441,7 @@ def train_and_evaluate(
         "training_start": artifact["training_start"],
         "training_end": artifact["training_end"],
         "samples": len(samples),
-        "note": "The saved model.json is refit on all labeled rows after the untouched test evaluation; the test score estimates this training procedure, not these exact final weights.",
+        "note": "The saved model.json is refit on all labeled rows after evaluation for exploratory scoring; 2025 is already inspected, and these weights/policies are not approved for live orders.",
     }
     prediction_rows = []
     for split_name, split_samples, split_prob in (("validation", validation, validation_prob), ("test", test, test_prob)):
@@ -320,8 +450,8 @@ def train_and_evaluate(
                 "split": split_name, "signal_date": bars[sample.index].date.isoformat(),
                 "target_exit_date": bars[sample.exit_index].date.isoformat(),
                 "probability_positive_net_return": round(probability, 6),
-                "predicted_action": ("BUY_IF_FLAT" if probability >= probability_threshold else
-                                     "SELL_IF_HOLDING" if probability < 1 - probability_threshold else "HOLD"),
+                "predicted_action": ("BUY_IF_FLAT" if probability >= selected_threshold else
+                                     "SELL_IF_HOLDING" if probability < 1 - selected_threshold else "HOLD"),
                 "actual_positive_net_return": sample.label,
                 "realized_forward_return_pct": round(sample.forward_return_pct, 4),
             })
@@ -369,6 +499,8 @@ def predict_latest(bars: list[Bar], symbol: str, model_path: Path) -> dict:
         "last_close": bars[-1].close, "forecast_horizon_sessions": artifact["horizon_sessions"],
         "probability_return_exceeds_estimated_costs": round(probability, 6),
         "probability_threshold": threshold, "action": action,
+        "policy_mode": artifact.get("policy_mode", "legacy_fixed_threshold"),
+        "stop_loss_pct": artifact.get("stop_loss_pct"),
         "model_training_end": artifact["training_end"],
         "warning": "A historical model probability is not a guaranteed forecast or a live trading instruction. Refresh data and evaluate across multiple symbols before any real-money use.",
     }

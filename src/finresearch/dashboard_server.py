@@ -21,6 +21,7 @@ def run_model_cycle(
     cost_bps: float = 30.0,
     allocation_pct: float = 50.0,
     probability_threshold: float = 0.55,
+    max_drawdown_pct: float = 5.0,
 ) -> dict:
     """Train/evaluate each available symbol and score its latest local bar."""
     csvs = sorted(data_dir.glob("*_adjusted.csv"))
@@ -47,7 +48,8 @@ def run_model_cycle(
         try:
             bars = load_bars(csv_path)
             report, extras, _ = train_and_evaluate(
-                bars, symbol, horizon, capital, cost_bps, allocation_pct, probability_threshold)
+                bars, symbol, horizon, capital, cost_bps, allocation_pct,
+                probability_threshold, max_drawdown_pct)
             symbol_dir = results_dir / symbol
             write_model_outputs(report, extras, symbol_dir)
             signal = predict_latest(bars, symbol, symbol_dir / "model.json")
@@ -134,14 +136,16 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 def serve_dashboard(data_dir: Path, results_dir: Path, dashboard_path: Path,
                     port: int = 8765, horizon: int = 5, capital: float = 10000.0,
                     cost_bps: float = 30.0, allocation_pct: float = 50.0,
-                    probability_threshold: float = 0.55) -> None:
+                    probability_threshold: float = 0.55,
+                    max_drawdown_pct: float = 5.0) -> None:
     if not data_dir.is_dir():
         raise ValueError(f"Data directory does not exist: {data_dir}")
     build_dashboard(data_dir, results_dir, dashboard_path)
 
     def callback() -> dict:
         return run_model_cycle(data_dir, results_dir, dashboard_path, horizon,
-                               capital, cost_bps, allocation_pct, probability_threshold)
+                               capital, cost_bps, allocation_pct, probability_threshold,
+                               max_drawdown_pct)
 
     handler = partial(_DashboardHandler)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)

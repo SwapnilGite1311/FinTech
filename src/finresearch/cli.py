@@ -52,6 +52,7 @@ def main() -> int:
     model.add_argument("--cost-bps", type=float, default=30.0, help="estimated one-way cost in basis points")
     model.add_argument("--allocation-pct", type=float, default=25.0, help="maximum starting-cash allocation per simulated position")
     model.add_argument("--probability-threshold", type=float, default=0.55, help="fixed probability threshold for simulated buys")
+    model.add_argument("--max-drawdown-pct", type=float, default=5.0, help="validation-only maximum drawdown for risk-policy selection; otherwise model stands aside")
     model.add_argument("--output", type=Path, default=Path("model-results"), help="directory for model and evaluation artifacts")
     predict_model = subparsers.add_parser("predict-model", help="score the latest row with a saved research model; no order is sent")
     predict_model.add_argument("--csv", required=True, type=Path, help="adjusted OHLCV CSV for the model symbol")
@@ -72,6 +73,7 @@ def main() -> int:
     dashboard_server.add_argument("--cost-bps", type=float, default=30.0, help="estimated one-way cost in basis points")
     dashboard_server.add_argument("--allocation-pct", type=float, default=50.0, help="maximum starting-capital allocation per simulated position")
     dashboard_server.add_argument("--probability-threshold", type=float, default=0.55, help="fixed threshold for simulated buy signals")
+    dashboard_server.add_argument("--max-drawdown-pct", type=float, default=5.0, help="validation-only maximum drawdown for risk-policy selection; otherwise model stands aside")
     fetch = subparsers.add_parser("fetch-eod", help="download real NSE daily OHLCV data from TejHQ (no broker login)")
     fetch.add_argument("--symbol", required=True, help="NSE symbol, for example TCS")
     fetch.add_argument("--start", required=True, help="first date, YYYY-MM-DD")
@@ -145,6 +147,7 @@ def main() -> int:
             # Each symbol is an independent scenario run sequentially with the
             # requested capital. This is not a combined, simultaneous basket.
             per_symbol_capital = args.capital
+            latest_signals = []
             for csv_path in csv_files:
                 metadata_path = csv_path.with_suffix(".source.json")
                 if args.symbol:
@@ -157,9 +160,10 @@ def main() -> int:
                 bars = load_bars(csv_path)
                 report, extras, _ = train_and_evaluate(
                     bars, symbol, args.horizon, per_symbol_capital, args.cost_bps,
-                    args.allocation_pct, args.probability_threshold)
+                    args.allocation_pct, args.probability_threshold, args.max_drawdown_pct)
                 output_dir = args.output / symbol if len(csv_files) > 1 else args.output
                 write_model_outputs(report, extras, output_dir)
+                latest_signals.append(predict_latest(bars, symbol, output_dir / "model.json"))
                 results.append({"symbol": symbol, "file": str(csv_path),
                                 "test_accuracy_pct": report["test"]["classification"]["accuracy_pct"],
                                 "test_balanced_accuracy_pct": report["test"]["classification"]["balanced_accuracy_pct"],
@@ -168,9 +172,17 @@ def main() -> int:
                                 "test_buy_and_hold_return_pct": report["test"]["portfolio"]["buy_and_hold_return_pct"],
                                 "test_trade_count": report["test"]["portfolio"]["closed_trades"],
                                 "artifacts": str(output_dir)})
-                print(f"{symbol}: test accuracy {results[-1]['test_accuracy_pct']:.1f}%, "
-                      f"model {results[-1]['test_model_return_pct']:.2f}% vs "
+                print(f"{symbol}: test direction accuracy {results[-1]['test_accuracy_pct']:.1f}%, "
+                      f"selected policy {results[-1]['test_model_return_pct']:.2f}% vs "
                       f"buy-and-hold {results[-1]['test_buy_and_hold_return_pct']:.2f}%")
+                selected = report["policy_selection"]["selected"]
+                test_portfolio = report["test"]["portfolio"]
+                stop = f", stop {selected['stop_loss_pct']}%" if selected["stop_loss_pct"] else ""
+                print(f"  selected research policy: {selected['mode']} | threshold {selected['probability_threshold']:.2f}{stop}")
+                print(f"  test P&L INR {test_portfolio['net_pnl']:.2f} | drawdown "
+                      f"{test_portfolio['max_drawdown_pct']:.2f}% | win rate "
+                      f"{test_portfolio['win_rate_pct']:.1f}% | largest trade loss "
+                      f"INR {test_portfolio['largest_trade_loss']:.2f}")
             basket_summary = {
                 "method": "independent per-symbol models with chronological holdouts; scenarios run separately, not concurrently",
                 "capital_per_simulation": round(per_symbol_capital, 2),
@@ -180,6 +192,9 @@ def main() -> int:
             if len(csv_files) > 1:
                 args.output.mkdir(parents=True, exist_ok=True)
                 (args.output / "basket_summary.json").write_text(json.dumps(basket_summary, indent=2) + "\n", encoding="utf-8")
+            args.output.mkdir(parents=True, exist_ok=True)
+            (args.output / "latest_signals.json").write_text(
+                json.dumps(latest_signals, indent=2) + "\n", encoding="utf-8")
             print(f"Research artifacts: {args.output.resolve()}")
             return 0
         if args.command == "model-dashboard":
@@ -194,7 +209,8 @@ def main() -> int:
                 raise ValueError("Research capital must be positive")
             serve_dashboard(args.data_dir, args.results_dir, args.output, args.port,
                             args.horizon, args.capital, args.cost_bps,
-                            args.allocation_pct, args.probability_threshold)
+                            args.allocation_pct, args.probability_threshold,
+                            args.max_drawdown_pct)
             return 0
         bars = load_bars(args.csv)
         if args.command == "predict-model":

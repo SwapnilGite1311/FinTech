@@ -21,7 +21,7 @@ Train and evaluate it using a chronological 60/20/20 split:
 python -m finresearch train-model --csv .\data\market-data\NSE_TCS_2021-01-01_2025-12-31_adjusted.csv --symbol TCS --horizon 5 --capital 10000 --cost-bps 30 --allocation-pct 50 --output model-results
 ```
 
-Labels whose five-session outcome crosses a split boundary are excluded. Scaling is fit only on training data, and rolling-origin checks use a five-session gap. The fixed buy probability threshold is 0.55 and the sell threshold is 0.45; they are not tuned on the final test period. The output contains a research-only model artifact, chronological classification and portfolio metrics, and validation/test predictions. The report's test result comes from the model fitted only on the training period; the separate saved `model.json` is refit on all labeled history after evaluation for exploratory scoring.
+Labels whose five-session outcome crosses a split boundary are excluded. Scaling is fit only on training data, and rolling-origin checks use a five-session gap. A small set of probability thresholds and optional 3%/5% protective stops is screened across the training rolling-origin folds and the validation segment. A candidate must be profitable in every segment, have at least three validation trades, and keep drawdown within `--max-drawdown-pct` (default 5%) in every segment to be selected; if no candidate qualifies, the model stands aside. The stop uses daily OHLC estimates and can gap through its threshold. This validation policy can still overfit. Results include net P&L, drawdown, win rate, profit factor, largest trade loss, and a no-stop baseline for comparison. The 2025 test data in the current project has already been inspected and must be treated as an audit period, not a pristine final holdout. The separate saved `model.json` is refit on all available labeled history for exploratory scoring only.
 
 Score the latest row in a CSV with the saved research model:
 
@@ -31,7 +31,7 @@ python -m finresearch predict-model --csv .\data\market-data\NSE_TCS_2021-01-01_
 
 This prints `BUY_IF_FLAT`, `SELL_IF_HOLDING`, or `HOLD`; it only saves a research prediction and sends no order. The file above ends in 2025, so its latest-row prediction is historical and stale. Download a fresh adjusted CSV before interpreting any latest-row score. `--capital` is simulated research capital; default ₹10,000. The project does not connect to a broker or place orders.
 
-The current TCS file is only a first prototype dataset. Its untouched 2025 test was close to chance and did not establish a reliable edge. One stock across 2021–2025 is not enough to justify live trading. The next research step is to run the same locked model process separately across several adjusted stocks and market regimes, with verified data-use rights and more realistic charges. Live capital remains capped at ₹500 if a broker feature is ever considered; no such feature exists now.
+The current TCS file is only a first prototype dataset. Its 2025 audit period was close to chance and did not establish a reliable edge. One stock across 2021–2025 is not enough to justify live trading. The current validation drawdown filter is a research selection rule, not a guarantee or hard live risk limit. Future data after 2025 is needed for a genuinely unseen final evaluation. Live capital remains capped at ₹500 if a broker feature is ever considered; no such feature exists now.
 
 ## Get real historical data without a broker account
 
