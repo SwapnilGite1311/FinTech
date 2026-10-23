@@ -7,6 +7,9 @@ from pathlib import Path
 import threading
 import time
 import csv
+import json
+import ssl
+import uuid
 from typing import Any
 
 
@@ -41,7 +44,6 @@ class UpstoxLiveFeed:
         self._connected = False
         self._last_message: str | None = None
         self._error: str | None = None
-        self._streamer = None
         self._capture_dir = capture_dir
 
     def start(self) -> None:
@@ -50,31 +52,41 @@ class UpstoxLiveFeed:
 
     def _run(self) -> None:
         try:
-            import upstox_client
+            import certifi
+            import websocket
+            from google.protobuf import json_format
+            from upstox_client.feeder.proto import MarketDataFeedV3_pb2
 
-            configuration = upstox_client.Configuration()
-            configuration.access_token = self._token
-            client = upstox_client.ApiClient(configuration)
-            streamer = upstox_client.MarketDataStreamerV3(client, self.instrument_keys, "ltpc")
-            self._streamer = streamer
-            streamer.auto_reconnect(True, 5, 20)
+            feed_response_type = MarketDataFeedV3_pb2.FeedResponse
 
-            def on_open(*_args: Any) -> None:
+            def on_open(ws: Any) -> None:
                 with self._lock:
                     self._connected = True
                     self._error = None
+                request = {"guid": str(uuid.uuid4()), "method": "sub",
+                           "data": {"instrumentKeys": self.instrument_keys, "mode": "ltpc"}}
+                ws.send(json.dumps(request).encode("utf-8"), opcode=websocket.ABNF.OPCODE_BINARY)
 
             def on_close(*_args: Any) -> None:
                 with self._lock:
                     self._connected = False
 
-            def on_error(*args: Any) -> None:
-                # SDK errors may contain URLs/headers; keep the display generic.
+            def on_error(*_args: Any) -> None:
+                # Never expose transport exception strings or authorization headers.
                 with self._lock:
                     self._connected = False
                     self._error = "Market-data connection error; check token, subscription, and network."
 
-            def on_message(message: Any) -> None:
+            def on_message(_ws: Any, message: Any) -> None:
+                if not isinstance(message, (bytes, bytearray)):
+                    return
+                try:
+                    decoded = feed_response_type.FromString(message)
+                    message = json_format.MessageToDict(decoded)
+                except Exception:
+                    with self._lock:
+                        self._error = "Received an unreadable market-data packet."
+                    return
                 now = datetime.now(timezone.utc).isoformat()
                 feeds = message.get("feeds", {}) if isinstance(message, dict) else {}
                 updates = []
@@ -106,13 +118,24 @@ class UpstoxLiveFeed:
                         # A filesystem issue should not interrupt visualization.
                         pass
 
-            streamer.on("open", on_open)
-            streamer.on("close", on_close)
-            streamer.on("error", on_error)
-            streamer.on("message", on_message)
-            streamer.connect()
-            while True:
-                time.sleep(1)
+            attempts = 0
+            while attempts < 20:
+                app = websocket.WebSocketApp(
+                    "wss://api.upstox.com/v3/feed/market-data-feed",
+                    header={"Authorization": f"Bearer {self._token}"},
+                    on_open=on_open, on_message=on_message,
+                    on_error=on_error, on_close=on_close)
+                # Validate the server certificate and hostname before sending the read-only token.
+                app.run_forever(sslopt={"cert_reqs": ssl.CERT_REQUIRED,
+                                        "ca_certs": certifi.where(),
+                                        "check_hostname": True},
+                                ping_interval=30, ping_timeout=10)
+                attempts += 1
+                if attempts < 20:
+                    time.sleep(5)
+            with self._lock:
+                self._connected = False
+                self._error = "Market-data reconnect limit reached; restart the dashboard to retry."
         except Exception:
             with self._lock:
                 self._connected = False
