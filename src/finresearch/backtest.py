@@ -162,7 +162,9 @@ def run_backtest(bars: list[Bar], fast: int, slow: int, capital: float, cost_bps
     daily_std = math.sqrt(variance)
     elapsed_days = max((bars[-1].date - bars[0].date).days, 1)
     annualized_return = (final_equity / capital) ** (365.25 / elapsed_days) - 1 if final_equity > 0 else -1.0
-    buy_hold_end = capital * bars[-1].close / bars[0].close * (1 - fee_rate) ** 2
+    buy_hold_shares = int(capital / (bars[0].close * (1 + fee_rate)))
+    buy_hold_cash = capital - buy_hold_shares * bars[0].close * (1 + fee_rate)
+    buy_hold_end = buy_hold_cash + buy_hold_shares * bars[-1].close * (1 - fee_rate)
     winners = [trade.pnl for trade in trades if trade.pnl > 0]
     losers = [trade.pnl for trade in trades if trade.pnl < 0]
     gross_profit, gross_loss = sum(winners), abs(sum(losers))
@@ -180,6 +182,7 @@ def run_backtest(bars: list[Bar], fast: int, slow: int, capital: float, cost_bps
         "annualized_volatility_pct": round(volatility * 100, 4),
         "sharpe_ratio_zero_risk_free": round(mean_return / daily_std * math.sqrt(252), 4) if daily_std else 0.0,
         "buy_and_hold_return_pct": round((buy_hold_end / capital - 1) * 100, 4),
+        "buy_and_hold_shares": buy_hold_shares,
         "closed_trades": len(trades),
         "win_rate_pct": round(len(winners) / len(trades) * 100, 2) if trades else 0.0,
         "profit_factor": round(gross_profit / gross_loss, 4) if gross_loss else (None if not gross_profit else "infinite"),
@@ -227,10 +230,12 @@ def run_walk_forward(bars: list[Bar], capital: float, cost_bps: float,
                       "bars": len(train_bars), "selected_strategy_return_pct": selected["train_return_pct"]},
             "validation": {"start_date": validation_bars[0].date.isoformat(), "end_date": validation_bars[-1].date.isoformat(),
                            "bars": len(validation_bars), "strategy_return_pct": validation["net_return_pct"],
-                           "buy_and_hold_return_pct": validation["buy_and_hold_return_pct"]},
+                           "buy_and_hold_return_pct": validation["buy_and_hold_return_pct"],
+                           "buy_and_hold_shares": validation["buy_and_hold_shares"]},
             "test": {"start_date": test_bars[0].date.isoformat(), "end_date": test_bars[-1].date.isoformat(),
                      "bars": len(test_bars), "strategy_return_pct": test["net_return_pct"],
                      "buy_and_hold_return_pct": test["buy_and_hold_return_pct"],
+                     "buy_and_hold_shares": test["buy_and_hold_shares"],
                      "max_drawdown_pct": test["max_drawdown_pct"], "closed_trades": test["closed_trades"]},
         },
         "warning": "A single historical split is not evidence of future profitability; results depend on data quality, corporate actions, and cost assumptions.",

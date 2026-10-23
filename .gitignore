@@ -1,6 +1,7 @@
 # Downloaded third-party market data; retain source metadata locally, not in Git.
 /data/market-data/
 /paper-results/
+/paper-results-*/
 /results/
 __pycache__/
 *.py[cod]
