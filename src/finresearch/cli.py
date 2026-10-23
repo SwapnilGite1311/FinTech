@@ -9,8 +9,6 @@ from .paper import replay_paper, write_paper_results
 from .data_source import fetch_eod_csv, fetch_adjusted_eod_csv
 from datetime import date
 import os
-import json
-from .dashboard import generate_dashboard
 
 
 def main() -> int:
@@ -51,15 +49,6 @@ def main() -> int:
     fetch_adjusted.add_argument("--start", required=True, help="first date, YYYY-MM-DD")
     fetch_adjusted.add_argument("--end", required=True, help="last date, YYYY-MM-DD")
     fetch_adjusted.add_argument("--output", type=Path, default=Path("data/market-data"), help="where to save CSV and source metadata")
-    dashboard = subparsers.add_parser("dashboard", help="create a local visual report of a historical simulated replay")
-    dashboard.add_argument("--csv", required=True, type=Path, help="OHLCV CSV file")
-    dashboard.add_argument("--fast", type=int, default=5, help="fast moving-average period")
-    dashboard.add_argument("--slow", type=int, default=20, help="slow moving-average period")
-    dashboard.add_argument("--capital", type=float, default=500.0, help="starting cash in the CSV price currency")
-    dashboard.add_argument("--cost-bps", type=float, default=30.0, help="estimated cost per side in basis points")
-    dashboard.add_argument("--max-allocation-pct", type=float, default=25.0, help="maximum starting-capital allocation per position")
-    dashboard.add_argument("--max-loss-pct", type=float, default=5.0, help="halt new entries after this loss from starting capital")
-    dashboard.add_argument("--output", type=Path, default=Path("dashboard.html"), help="self-contained HTML report path")
     args = parser.parse_args()
     try:
         if args.command == "fetch-eod":
@@ -76,25 +65,6 @@ def main() -> int:
             print("Prices are adjusted; volume is raw. Source metadata was saved beside the CSV.")
             return 0
         bars = load_bars(args.csv)
-        if args.command == "dashboard":
-            result = replay_paper(bars, args.fast, args.slow, args.capital, args.cost_bps,
-                                  args.max_allocation_pct, args.max_loss_pct)
-            metadata_path = args.csv.with_suffix(".source.json")
-            if args.csv.name == "demo_prices.csv":
-                data_label = "SYNTHETIC DEMO"
-                data_note = "This synthetic series is for visual demonstration only and is not evidence of strategy performance."
-            elif metadata_path.exists():
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                data_label = f"{metadata.get('provider', 'Market data')} · {metadata.get('symbol', args.csv.stem)}"
-                data_note = f"{metadata.get('data_type', 'Historical market data')}. Confirm data-use permissions before relying on this replay."
-            else:
-                data_label = "USER CSV"
-                data_note = "Confirm that the prices are adjusted for corporate actions and that their terms allow research simulation."
-            output_path = generate_dashboard(
-                bars, result, args.output, args.csv.stem.replace("_", " "),
-                data_label, data_note, args.cost_bps)
-            print(f"Dashboard created (historical simulation only): {output_path.resolve()}")
-            return 0
         if args.command == "backtest":
             result = run_backtest(bars, args.fast, args.slow, args.capital, args.cost_bps)
             write_results(result, args.output)

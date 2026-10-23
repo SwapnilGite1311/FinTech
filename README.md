@@ -58,20 +58,6 @@ To try the command without finding market data first, use `data\demo_prices.csv`
 python -m finresearch paper-replay --csv .\data\demo_prices.csv --capital 10000
 ```
 
-Create a visual dashboard from a historical replay. The page is a local self-contained HTML file with a price chart, simulated buy/sell markers, equity versus whole-share buy-and-hold, performance metrics, and an order log:
-
-```powershell
-python -m finresearch dashboard --csv .\data\demo_prices.csv --capital 500 --max-allocation-pct 25 --output .\dashboard-demo.html
-```
-
-The synthetic dashboard is clearly labeled and for visual explanation only. To display a real adjusted dataset under the current ₹500 budget, use:
-
-```powershell
-python -m finresearch dashboard --csv .\data\market-data\NSE_TCS_2021-01-01_2025-12-31_adjusted.csv --capital 500 --max-allocation-pct 25 --output .\dashboard-tcs.html
-```
-
-Open the generated `.html` file in a browser. If the price is too high for the cash/allocation limit, the dashboard explains why there are no fills.
-
 This is **historical replay, not live paper trading**. It creates no broker connection or real orders. It writes `paper_summary.json`, `paper_orders.csv`, and `paper_equity.csv`.
 
 The moving-average crossover strategy calculates its signal from each session's close and fills at the **next session's open** to avoid using future information. Cost basis points are charged on both entry and exit as a single configurable estimate. Outputs are `summary.json` and `trades.csv` in the chosen output folder.
