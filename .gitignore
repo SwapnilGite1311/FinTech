@@ -1,0 +1,9 @@
+# Downloaded third-party market data; retain source metadata locally, not in Git.
+/data/market-data/
+/paper-results/
+/results/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
