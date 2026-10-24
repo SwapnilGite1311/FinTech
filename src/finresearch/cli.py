@@ -7,10 +7,11 @@ import sys
 
 from .backtest import load_bars, run_backtest, run_walk_forward, write_results, write_walk_forward_result
 from .paper import replay_paper, write_paper_results
-from .data_source import fetch_eod_csv, fetch_adjusted_eod_csv
+from .data_source import fetch_eod_csv, fetch_adjusted_eod_csv, fetch_upstox_minute_csv
 from .model import train_and_evaluate, write_model_outputs, predict_latest
 from .dashboard import build_dashboard
 from .dashboard_server import serve_dashboard
+from .intraday import load_minute_bars, train_intraday, write_intraday_outputs
 from datetime import date
 import os
 
@@ -74,6 +75,8 @@ def main() -> int:
     dashboard_server.add_argument("--allocation-pct", type=float, default=50.0, help="maximum starting-capital allocation per simulated position")
     dashboard_server.add_argument("--probability-threshold", type=float, default=0.55, help="fixed threshold for simulated buy signals")
     dashboard_server.add_argument("--max-drawdown-pct", type=float, default=5.0, help="validation-only maximum drawdown for risk-policy selection; otherwise model stands aside")
+    dashboard_server.add_argument("--intraday-model", type=Path,
+                                  help="optional trained intraday_model.json; with one matching live instrument only")
     fetch = subparsers.add_parser("fetch-eod", help="download real NSE daily OHLCV data from TejHQ (no broker login)")
     fetch.add_argument("--symbol", required=True, help="NSE symbol, for example TCS")
     fetch.add_argument("--start", required=True, help="first date, YYYY-MM-DD")
@@ -89,8 +92,63 @@ def main() -> int:
     fetch_batch.add_argument("--start", required=True, help="first date, YYYY-MM-DD")
     fetch_batch.add_argument("--end", required=True, help="last date, YYYY-MM-DD")
     fetch_batch.add_argument("--output", type=Path, default=Path("data/market-data"), help="where to save CSVs and source metadata")
+    fetch_intraday = subparsers.add_parser(
+        "fetch-intraday", help="download one-minute NSE candles from Upstox V3 for research")
+    fetch_intraday.add_argument("--instrument-key", required=True,
+                                help="Upstox instrument key, for example NSE_EQ|INE467B01029")
+    fetch_intraday.add_argument("--start", required=True, help="first date, YYYY-MM-DD")
+    fetch_intraday.add_argument("--end", required=True, help="last date, YYYY-MM-DD")
+    fetch_intraday.add_argument("--output", type=Path, default=Path("data/market-data"),
+                                help="where to save minute CSV and source metadata")
+    train_intraday_cmd = subparsers.add_parser(
+        "train-intraday", help="train and chronologically evaluate an intraday minute-bar model")
+    train_intraday_cmd.add_argument("--csv", required=True, type=Path, help="Upstox one-minute OHLCV CSV")
+    train_intraday_cmd.add_argument("--symbol", required=True, help="symbol label for the report")
+    train_intraday_cmd.add_argument("--horizon", type=int, default=5, help="minutes from next-bar entry to exit")
+    train_intraday_cmd.add_argument("--capital", type=float, default=10000.0, help="simulated research capital")
+    train_intraday_cmd.add_argument("--cost-bps", type=float, default=30.0, help="estimated cost per side")
+    train_intraday_cmd.add_argument("--allocation-pct", type=float, default=50.0,
+                                    help="maximum starting-capital allocation per simulated position")
+    train_intraday_cmd.add_argument("--threshold", type=float, default=0.55,
+                                    help="fixed logistic score threshold (scores are uncalibrated)")
+    train_intraday_cmd.add_argument("--max-loss-pct", type=float, default=5.0,
+                                    help="halt the simulated account after this loss from starting capital")
+    train_intraday_cmd.add_argument("--output", type=Path, default=Path("intraday-model-results"),
+                                    help="directory for report, model, trades, and equity")
     args = parser.parse_args()
     try:
+        if args.command == "fetch-intraday":
+            output_path = fetch_upstox_minute_csv(
+                args.instrument_key, date.fromisoformat(args.start), date.fromisoformat(args.end),
+                args.output, os.environ.get("FINRESEARCH_UPSTOX_ANALYTICS_TOKEN", ""))
+            print(f"Downloaded one-minute candles: {output_path.resolve()}")
+            print("Read-only historical data only; no broker orders were placed.")
+            return 0
+        if args.command == "train-intraday":
+            bars = load_minute_bars(args.csv)
+            report, artifact = train_intraday(
+                bars, args.symbol, args.horizon, args.capital, args.cost_bps,
+                args.allocation_pct, args.threshold, args.max_loss_pct)
+            metadata_path = args.csv.with_suffix(".source.json")
+            if metadata_path.exists():
+                try:
+                    source = json.loads(metadata_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"Could not read minute CSV source metadata: {exc}") from exc
+                if source.get("instrument_key"):
+                    artifact["instrument_key"] = source["instrument_key"]
+            write_intraday_outputs(report, artifact, args.output)
+            classification = report["test_classification"]
+            portfolio = report["test_portfolio"]
+            print(f"Intraday model evaluated on chronological test segment: "
+                  f"accuracy {classification['accuracy_pct']:.1f}%, "
+                  f"balanced accuracy {classification['balanced_accuracy_pct']:.1f}%, "
+                  f"net return {portfolio['net_return_pct']:.2f}% vs buy-and-hold "
+                  f"{portfolio['buy_and_hold_return_pct']:.2f}%, "
+                  f"{portfolio['closed_trades']} closed trades")
+            print("Research simulation only; model is not connected to live paper or broker orders.")
+            print(f"Artifacts: {args.output.resolve()}")
+            return 0
         if args.command == "fetch-eod":
             output_path = fetch_eod_csv(args.symbol, date.fromisoformat(args.start),
                                         date.fromisoformat(args.end), args.output)
@@ -210,7 +268,7 @@ def main() -> int:
             serve_dashboard(args.data_dir, args.results_dir, args.output, args.port,
                             args.horizon, args.capital, args.cost_bps,
                             args.allocation_pct, args.probability_threshold,
-                            args.max_drawdown_pct)
+                            args.max_drawdown_pct, args.intraday_model)
             return 0
         bars = load_bars(args.csv)
         if args.command == "predict-model":

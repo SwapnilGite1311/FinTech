@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -13,6 +13,7 @@ import json
 
 BASE_URL = "https://api.tejhq.dev/v1/ohlcv/nse"
 ADJUSTED_URL = "https://api.tejhq.dev/v1/adjusted/nse"
+UPSTOX_INTRADAY_URL = "https://api.upstox.com/v3/historical-candle"
 
 
 def _fetch_json(url: str, api_key: str | None = None) -> dict:
@@ -153,6 +154,93 @@ def fetch_adjusted_eod_csv(symbol: str, start: date, end: date, output_dir: Path
         "data_type": "OHLC adjusted by the provider adjusted-close/raw-close factor; volume remains raw",
         "adjustment_source": "TejHQ /v1/adjusted adj_close joined to /v1/ohlcv by date",
         "license_note": "Provider states its published dataset is MIT licensed; check exchange and provider terms for intended use.",
+    }
+    csv_path.with_suffix(".source.json").write_text(
+        json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    return csv_path
+
+
+def fetch_upstox_minute_csv(instrument_key: str, start: date, end: date,
+                            output_dir: Path, access_token: str) -> Path:
+    """Fetch one-minute NSE candles in month-sized V3 API requests.
+
+    Upstox limits one-minute historical requests to a month per call. The
+    function keeps credentials in the Authorization header and only writes
+    candle data and non-secret provenance to disk.
+    """
+    if start > end:
+        raise ValueError("Start date must be on or before end date")
+    key = instrument_key.strip()
+    if not key or "|" not in key or any(char.isspace() for char in key):
+        raise ValueError("Provide a valid Upstox instrument key, for example NSE_EQ|INE467B01029")
+    token = access_token.strip()
+    if not token:
+        raise ValueError("Set FINRESEARCH_UPSTOX_ANALYTICS_TOKEN before fetching minute candles")
+
+    rows_by_timestamp: dict[str, list] = {}
+    month_start = start.replace(day=1)
+    while month_start <= end:
+        next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        chunk_start = max(start, month_start)
+        chunk_end = min(end, next_month - timedelta(days=1))
+        encoded_key = quote(key, safe="")
+        url = (f"{UPSTOX_INTRADAY_URL}/{encoded_key}/minutes/1/"
+               f"{chunk_end.isoformat()}/{chunk_start.isoformat()}")
+        request = Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "fintech-trading-research/0.1",
+            "Authorization": f"Bearer {token}",
+        })
+        try:
+            with urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise ValueError(
+                f"Upstox returned HTTP {exc.code} for {chunk_start} to {chunk_end}; "
+                "check the token, instrument key, and historical-data access"
+            ) from exc
+        except URLError as exc:
+            raise ValueError(f"Could not reach Upstox historical-data API: {exc.reason}") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Upstox returned an invalid JSON response") from exc
+        if not isinstance(payload, dict) or payload.get("status") != "success":
+            raise ValueError("Upstox did not return a successful minute-candle response")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("Upstox response is missing its candle data object")
+        candles = data.get("candles", [])
+        if not isinstance(candles, list):
+            raise ValueError("Upstox response is missing its candle list")
+        for candle in candles:
+            if not isinstance(candle, list) or len(candle) < 6:
+                raise ValueError("Upstox returned a malformed minute candle")
+            rows_by_timestamp[str(candle[0])] = candle[:6]
+        month_start = next_month
+
+    if not rows_by_timestamp:
+        raise ValueError("Upstox returned no minute candles for the requested dates")
+
+    safe_key = key.replace("|", "_").replace("/", "_")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / f"UPSTOX_{safe_key}_{start.isoformat()}_{end.isoformat()}_1m.csv"
+    fields = ["timestamp", "open", "high", "low", "close", "volume"]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for timestamp, candle in sorted(rows_by_timestamp.items()):
+            writer.writerow(dict(zip(fields, candle)))
+
+    metadata = {
+        "provider": "Upstox V3 historical candle API",
+        "exchange": key.split("|", 1)[0],
+        "instrument_key": key,
+        "requested_start": start.isoformat(),
+        "requested_end": end.isoformat(),
+        "interval": "1 minute",
+        "row_count": len(rows_by_timestamp),
+        "downloaded_at_utc": datetime.now(timezone.utc).isoformat(),
+        "data_type": "intraday OHLCV; provider values and timestamps as returned",
+        "note": "Check current Upstox data access and exchange terms before commercial use.",
     }
     csv_path.with_suffix(".source.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

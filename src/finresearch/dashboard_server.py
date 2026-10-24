@@ -149,7 +149,8 @@ def serve_dashboard(data_dir: Path, results_dir: Path, dashboard_path: Path,
                     port: int = 8765, horizon: int = 5, capital: float = 10000.0,
                     cost_bps: float = 30.0, allocation_pct: float = 50.0,
                     probability_threshold: float = 0.55,
-                    max_drawdown_pct: float = 5.0) -> None:
+                    max_drawdown_pct: float = 5.0,
+                    intraday_model_path: Path | None = None) -> None:
     if not data_dir.is_dir():
         raise ValueError(f"Data directory does not exist: {data_dir}")
     build_dashboard(data_dir, results_dir, dashboard_path, include_live=True)
@@ -166,22 +167,39 @@ def serve_dashboard(data_dir: Path, results_dir: Path, dashboard_path: Path,
     token = os.environ.get("FINRESEARCH_UPSTOX_ANALYTICS_TOKEN", "").strip()
     instrument_keys = [item.strip() for item in os.environ.get(
         "FINRESEARCH_UPSTOX_INSTRUMENT_KEYS", "NSE_EQ|INE467B01029").split(",") if item.strip()]
+    model_artifact = None
+    if intraday_model_path:
+        if len(instrument_keys) != 1:
+            raise ValueError("Use exactly one instrument key with --intraday-model")
+        try:
+            model_artifact = json.loads(intraday_model_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Could not load intraday model artifact: {exc}") from exc
+        if model_artifact.get("model") != "minute_logistic_regression":
+            raise ValueError("--intraday-model is not a supported minute logistic-regression artifact")
+        if model_artifact.get("instrument_key") != instrument_keys[0]:
+            raise ValueError("Intraday model instrument_key does not match the configured live instrument")
+        if len(model_artifact.get("feature_names", [])) != len(model_artifact.get("coefficients", [])):
+            raise ValueError("Intraday model feature dimensions are invalid")
     if token and instrument_keys:
         from .live_feed import UpstoxLiveFeed
-        live_feed = UpstoxLiveFeed(token, instrument_keys)
+        live_feed = UpstoxLiveFeed(token, instrument_keys, model_artifact=model_artifact)
         live_feed.start()
         server.live_callback = live_feed.snapshot
-        live_message = f"Read-only Upstox feed starting for {len(instrument_keys)} instrument(s)."
+        strategy = "trained intraday model" if model_artifact else "SMA baseline"
+        live_message = f"Read-only Upstox feed starting for {len(instrument_keys)} instrument(s), using {strategy}."
     elif not token:
         from .live_feed import PaperSmaBaseline
-        initial_paper = {key: PaperSmaBaseline().snapshot() for key in instrument_keys}
+        initial_paper = {key: PaperSmaBaseline(model_artifact=model_artifact).snapshot()
+                         for key in instrument_keys}
         for account in initial_paper.values():
             account["signal"] = "Waiting for live feed"
         server.live_callback = lambda: {"provider": "Upstox", "connected": False,
             "instrument_keys": instrument_keys, "ticks": {key: [] for key in instrument_keys},
             "paper": initial_paper,
             "error": "Not configured. Set FINRESEARCH_UPSTOX_ANALYTICS_TOKEN and restart."}
-        live_message = "Live chart is waiting for a read-only Upstox Analytics Token (default instrument: TCS)."
+        live_message = ("Live chart is waiting for a read-only Upstox Analytics Token "
+                        f"(default instrument: TCS; strategy: {'trained intraday model' if model_artifact else 'SMA baseline'}).")
     else:
         server.live_callback = lambda: {"provider": "Upstox", "connected": False,
             "instrument_keys": [], "ticks": {},

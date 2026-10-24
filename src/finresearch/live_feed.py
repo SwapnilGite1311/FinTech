@@ -13,6 +13,8 @@ import ssl
 import uuid
 from typing import Any
 
+from .intraday import MinuteBar, features_at, score_intraday_features
+
 
 def _find_ltp(value: Any) -> tuple[float | None, str | None, int | None]:
     """Extract last traded price/time/volume from the SDK's decoded feed dict."""
@@ -35,14 +37,15 @@ def _find_ltp(value: Any) -> tuple[float | None, str | None, int | None]:
 
 
 class PaperSmaBaseline:
-    """Transparent one-minute crossover paper benchmark; never sends broker orders."""
+    """One-minute paper benchmark or ML strategy; never sends broker orders."""
 
     def __init__(self, capital: float = 10000.0, cost_bps_per_side: float = 30.0,
-                 max_drawdown_pct: float = 5.0):
+                 max_drawdown_pct: float = 5.0, model_artifact: dict | None = None):
         self.starting_capital = capital
         self.cash = capital
         self.cost_rate = cost_bps_per_side / 10000
-        self.max_loss = capital * max_drawdown_pct / 100
+        self.max_loss_pct = float((model_artifact or {}).get("max_loss_pct", max_drawdown_pct))
+        self.max_loss = capital * self.max_loss_pct / 100
         self.shares = 0
         self.current_price: float | None = None
         self.current_minute: str | None = None
@@ -51,29 +54,40 @@ class PaperSmaBaseline:
         self.previous_fast: float | None = None
         self.previous_slow: float | None = None
         self.pending_action: str | None = None
+        self.pending_reason = ""
         self.orders: list[dict[str, Any]] = []
+        self.model_artifact = model_artifact
+        self.bars: list[MinuteBar] = []
+        self.bar_sequence = 0
+        self.current_bar_time: datetime | None = None
+        self.entry_bar_index: int | None = None
+        self.model_score: float | None = None
         self.halted = False
         self.last_signal = "Collecting one-minute bars"
         self._timezone = ZoneInfo("Asia/Kolkata")
 
     def _execute(self, action: str, price: float, received_at: str, reason: str) -> None:
         if action == "BUY" and self.shares == 0 and not self.halted:
-            quantity = int(self.cash * 0.5 / (price * (1 + self.cost_rate)))
+            allocation = min(self.cash, self.starting_capital * 0.5)
+            quantity = int(allocation / (price * (1 + self.cost_rate)))
             if quantity < 1:
                 return
             self.cash -= quantity * price * (1 + self.cost_rate)
             self.shares = quantity
+            if self.model_artifact:
+                self.entry_bar_index = self.bar_sequence
         elif action == "SELL" and self.shares:
             quantity = self.shares
             self.cash += quantity * price * (1 - self.cost_rate)
             self.shares = 0
+            self.entry_bar_index = None
         else:
             return
         self.orders.append({"side": action, "price": price, "shares": quantity,
                             "received_at": received_at, "reason": reason})
         del self.orders[:-30]
 
-    def on_tick(self, price: float, received_at: str) -> None:
+    def on_tick(self, price: float, received_at: str, last_quantity: int = 0) -> None:
         self.current_price = price
         instant = datetime.fromisoformat(received_at).astimezone(self._timezone)
         minute = instant.strftime("%Y-%m-%d %H:%M")
@@ -81,14 +95,19 @@ class PaperSmaBaseline:
             if self.current_bar is not None:
                 self._finish_bar()
             self.current_minute = minute
-            self.current_bar = {"open": price, "high": price, "low": price, "close": price}
+            self.current_bar_time = instant.replace(second=0, microsecond=0)
+            self.current_bar = {"open": price, "high": price, "low": price,
+                                "close": price, "volume": max(0, last_quantity)}
             if self.pending_action:
                 action, self.pending_action = self.pending_action, None
-                self._execute(action, price, received_at, "5/20 SMA signal; next-minute-open paper fill")
+                reason, self.pending_reason = self.pending_reason, ""
+                self._execute(action, price, received_at,
+                              reason or "Signal; next-minute-open paper fill")
         elif self.current_bar is not None:
             self.current_bar["high"] = max(self.current_bar["high"], price)
             self.current_bar["low"] = min(self.current_bar["low"], price)
             self.current_bar["close"] = price
+            self.current_bar["volume"] += max(0, last_quantity)
 
         equity = self.cash + self.shares * price * (1 - self.cost_rate)
         if not self.halted and self.starting_capital - equity >= self.max_loss:
@@ -96,10 +115,39 @@ class PaperSmaBaseline:
                 self._execute("SELL", price, received_at, "5% paper-account loss circuit breaker")
             self.halted = True
             self.pending_action = None
+            self.pending_reason = ""
             self.last_signal = "HALTED · paper loss guardrail reached"
 
     def _finish_bar(self) -> None:
         assert self.current_bar is not None
+        assert self.current_bar_time is not None
+        completed = MinuteBar(self.current_bar_time, self.current_bar["open"],
+                              self.current_bar["high"], self.current_bar["low"],
+                              self.current_bar["close"], self.current_bar["volume"])
+        self.bars.append(completed)
+        self.bar_sequence += 1
+        self.bars = self.bars[-2500:]
+        if self.model_artifact:
+            if self.shares and self.entry_bar_index is not None:
+                if self.bar_sequence - self.entry_bar_index >= int(self.model_artifact["horizon_minutes"]):
+                    self.pending_action = "SELL"
+                    self.pending_reason = "Intraday model fixed holding horizon; next-minute-open paper exit"
+                    self.last_signal = "SELL queued · model holding horizon reached"
+                return
+            features = features_at(self.bars, len(self.bars) - 1)
+            if features is None:
+                self.last_signal = "Collecting 21 contiguous one-minute bars"
+                return
+            self.model_score = score_intraday_features(self.model_artifact, features)
+            threshold = float(self.model_artifact["score_threshold"])
+            if self.model_score >= threshold and not self.halted:
+                self.pending_action = "BUY"
+                self.pending_reason = (f"Intraday model score {self.model_score:.3f} met "
+                                       f"threshold {threshold:.3f}; next-minute-open paper fill")
+                self.last_signal = f"BUY queued · model score {self.model_score:.3f}"
+            else:
+                self.last_signal = f"HOLD · model score {self.model_score:.3f}"
+            return
         self.closes.append(self.current_bar["close"])
         self.closes = self.closes[-20:]
         if self.halted or len(self.closes) < 20:
@@ -111,9 +159,11 @@ class PaperSmaBaseline:
             crossed_down = self.previous_fast >= self.previous_slow and fast < slow
             if crossed_up and not self.shares:
                 self.pending_action = "BUY"
+                self.pending_reason = "5/20 SMA signal; next-minute-open paper fill"
                 self.last_signal = "BUY queued · next one-minute bar"
             elif crossed_down and self.shares:
                 self.pending_action = "SELL"
+                self.pending_reason = "5/20 SMA signal; next-minute-open paper fill"
                 self.last_signal = "SELL queued · next one-minute bar"
             else:
                 self.last_signal = "HOLD"
@@ -128,19 +178,25 @@ class PaperSmaBaseline:
                 "shares": self.shares, "mark_price": mark, "equity": round(equity, 2),
                 "net_pnl": round(pnl, 2), "net_return_pct": round(pnl / self.starting_capital * 100, 3),
                 "orders": list(self.orders), "signal": self.last_signal, "halted": self.halted,
-                "strategy": "5/20 simple moving-average crossover on one-minute bars",
+                "model_score": round(self.model_score, 5) if self.model_score is not None else None,
+                "max_loss_pct": self.max_loss_pct,
+                "strategy": ("minute logistic-regression model" if self.model_artifact else
+                             "5/20 simple moving-average crossover on one-minute bars"),
                 "estimated_cost_bps_per_side": round(self.cost_rate * 10000, 2)}
 
 
 class UpstoxLiveFeed:
     """Keep recent live ticks in memory; never exposes or logs the API token."""
 
-    def __init__(self, access_token: str, instrument_keys: list[str], capture_dir: Path = Path("data/live-capture")):
+    def __init__(self, access_token: str, instrument_keys: list[str],
+                 capture_dir: Path = Path("data/live-capture"),
+                 model_artifact: dict | None = None):
         self._token = access_token
         self.instrument_keys = instrument_keys
         self._lock = threading.Lock()
         self._ticks: dict[str, list[dict[str, Any]]] = {key: [] for key in instrument_keys}
-        self._paper = {key: PaperSmaBaseline() for key in instrument_keys}
+        self._paper = {key: PaperSmaBaseline(model_artifact=model_artifact)
+                       for key in instrument_keys}
         self._connected = False
         self._last_message: str | None = None
         self._error: str | None = None
@@ -203,7 +259,8 @@ class UpstoxLiveFeed:
                         for key, tick in updates:
                             self._ticks[key].append(tick)
                             del self._ticks[key][:-1200]
-                            self._paper[key].on_tick(tick["price"], tick["received_at"])
+                            self._paper[key].on_tick(tick["price"], tick["received_at"],
+                                                     tick["last_quantity"] or 0)
                         self._last_message = now
                         self._connected = True
                     try:

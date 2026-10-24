@@ -85,6 +85,33 @@ python -m finresearch dashboard-server --data-dir .\data\market-data --results-d
 
 The monitor needs a valid read-only token and network access; it only displays real feed data when the market is publishing ticks. The live panel also tracks a virtual ₹10,000 account and updates marked-to-market P&L with each tick. Its initial benchmark is a long-only 5/20 simple-moving-average crossover on completed one-minute bars, with next-minute-open simulated fills, estimated 30 bps costs per side, and a 5% paper loss circuit breaker. It waits for 20 complete bars before considering a signal. This benchmark is **not** the daily ML model and has not been optimized or shown profitable; it is a baseline to collect evidence against. Each watched symbol has its own independent ₹10,000 scenario, not one shared multi-stock portfolio. No broker orders are sent. Received ticks are appended to the ignored local folder `data\live-capture` for later research. The token stays in memory and is not written to logs or project files. Upstox documents Analytics Tokens as read-only, valid for one year, and usable with WebSocket feeds. Check current account and API terms directly with Upstox before setup.
 
+#### Prepare actual intraday history
+
+The daily model above cannot be treated as a live intraday model. To collect 1-minute historical candles from Upstox V3, set the read-only token in the same PowerShell session and fetch one instrument at a time. Upstox documents the [V3 historical-candle endpoint](https://upstox.com/developer/api-documentation/v3/get-historical-candle-data/) and minute-history retrieval limits; this command requests one month at a time and combines the returned candles:
+
+```powershell
+$env:FINRESEARCH_UPSTOX_ANALYTICS_TOKEN = "paste-read-only-token-here"
+python -m finresearch fetch-intraday --instrument-key 'NSE_EQ|INE467B01029' --start 2025-01-01 --end 2026-10-20
+```
+
+This writes an intraday CSV and source metadata in `data\market-data`. It is a read-only data request; it does not place orders. Use the exact instrument key from Upstox's instrument list for other symbols. Minute-history access, available lookback, and permitted use depend on current Upstox API and exchange terms. This command only prepares the data: it does **not** train a minute-level model or connect the daily model to the live paper account. Do not use live paper results as a claim of profitability.
+
+Train an experimental per-symbol model and report a chronological test segment:
+
+```powershell
+python -m finresearch train-intraday --csv .\data\market-data\UPSTOX_NSE_EQ_INE467B01029_2025-01-01_2026-10-20_1m.csv --symbol TCS --horizon 5 --capital 10000 --cost-bps 30 --allocation-pct 50 --threshold 0.55 --max-loss-pct 5 --output .\intraday-model-results
+```
+
+This is a logistic-regression baseline trained from minute-bar features, not a pretrained model. Labels and simulated fills stay within the same continuous trading session; samples around chronological boundaries are purged by the forecast horizon. The fixed score threshold is not searched on test data and the model scores are not calibrated probabilities. The simulated account halts after the configured loss from starting capital. Inspect `intraday_report.json`, `intraday_test_trades.csv`, and `intraday_test_equity.csv`; classification accuracy alone is not a trading-performance measure. A model artifact may be loaded for read-only live-feed paper simulation only after reviewing its untouched test report. The artifact must retain the instrument-key provenance from `fetch-intraday`, and the server refuses a key mismatch. Start the TCS server with `--intraday-model .\intraday-model-results\intraday_model.json`; this uses the model for paper-only signals and sends no broker orders. The live paper portfolio remains unvalidated until we have real feed data and replay results. Treat this as an experiment, not evidence that the system can earn money.
+
+For the feed dashboard to use the trained model, restart the server with:
+
+```powershell
+python -m finresearch dashboard-server --data-dir .\data\market-data --results-dir .\model-basket --output .\dashboard-paper-replay.html --intraday-model .\intraday-model-results\intraday_model.json
+```
+
+This live-model option currently supports one instrument key at a time. The dashboard displays the real price feed, paper account P&L, uncalibrated model score, and simulated BUY/SELL fills. It needs a valid read-only market-data token and active market feed; no historical test can guarantee that the live model will perform well.
+
 To export a static dashboard file without the run button enabled, use `model-dashboard`. It shows adjusted-price candles with simulated buy/sell fill markers, a separate account equity chart, model metrics, and the simulated order log.
 
 The CSV input must contain date, open, high, low, close, and volume columns, with one row per trading session and prices in the same currency. The loader accepts the project's lowercase headers and NSE-style headers such as `Date`, `Open Price`, `High Price`, `Low Price`, `Close Price`, and `Total Traded Quantity`. Example invocation:
